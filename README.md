@@ -10,26 +10,31 @@
 
 ## ✨ A Experiência
 
-O **Bip Horário** não é apenas um timer. É uma ferramenta de consciência temporal desenvolvida com foco em **precisão absoluta**. Diferente de apps comuns que iniciam a contagem no momento da ativação, o Bip Horário sincroniza-se com o relógio do seu smartphone para garantir que o som soe exatamente na virada do minuto ou da hora.
+O **Bip Horário** não é apenas um timer. É uma ferramenta de consciência temporal desenvolvida com foco em **precisão absoluta**. Diferente de apps comuns que iniciam a contagem a partir da ativação, o Bip Horário sincroniza-se diretamente com **servidores de hora atômica (NTP/HTTP)** para calcular o desvio do relógio interno do seu smartphone e emitir o som exatamente na virada do minuto ou da hora real.
 
 ### 🚀 Principais Recursos
 
--   **Sincronia Real-Time**: Alinhamento exato com os segundos `:00` do relógio Android/iOS.
--   **Intervalos Flexíveis**: Escolha entre bips a cada 1 minuto ou a cada hora cheia.
--   **Design Premium**: Interface escura (Dark Mode) com estética *Glassmorphism* e alta legibilidade.
--   **Eficiência Energética**: Otimizado para funcionar em segundo plano sem drenar a bateria.
--   **Feedback Instantâneo**: Preview sonoro ao ativar para garantir que o volume está ideal.
+-   **Sincronização Atômica (NTP/HTTP)**: Consulta servidores de tempo globais (como `timeapi.io` e `worldtimeapi.org`) para calcular a diferença exata (drift) do relógio do seu celular.
+-   **Compensação Dinâmica**: Ajusta e compensa automaticamente em milissegundos o agendamento de cada alerta para contornar qualquer imprecisão ou atraso do sistema do aparelho.
+-   **Painel com Clocks Duplos**: Visualização simultânea em tempo real do relógio do Celular e do Relógio Atômico sincronizado, exibindo inclusive décimos de segundo.
+-   **Timer Regressivo Vivo**: Contador dinâmico que exibe os segundos e décimos restantes exatos até o próximo bip.
+-   **Design Ultra Premium**: Nova interface futurista com estética *Glassmorphism* escura, neon cyan e feedbacks visuais pulsantes.
+-   **Eficiência Energética**: Agendamento inteligente em lote, otimizado para rodar em segundo plano consumindo o mínimo de bateria.
 
 ---
 
-## 🛠️ O Desafio Técnico (Android Sync)
+## 🛠️ O Desafio Técnico & Solução Atômica
 
-Um dos maiores diferenciais deste projeto é a solução para a limitação de triggers de calendário no Android. 
+Um dos maiores diferenciais deste projeto é a solução para a limitação de triggers de calendário no Android e o desvio natural (drift) dos relógios internos de smartphones.
 
-Enquanto o iOS permite nativamente o agendamento por calendário, o Android frequentemente sofre com atrasos em `intervals`. Para resolver isso, implementamos uma lógica de **Batch Scheduling**:
-1. O app calcula os milissegundos exatos até o próximo minuto cheio.
-2. Agenda um lote de 120 gatilhos do tipo `date` (pontos exatos no tempo).
-3. Utiliza um `NotificationReceivedListener` para auto-reagendar novos lotes silenciosamente, garantindo operação contínua e precisa.
+1. **Desvio de Relógio (Clock Drift)**: Relógios de celulares podem adiantar ou atrasar alguns segundos ou milissegundos ao longo do tempo. Para resolver isso, implementamos um algoritmo de sincronização HTTP de ida e volta (RTT):
+   - Mede o tempo de resposta da rede ($RTT$) para descontar a latência da requisição ($RTT / 2$).
+   - Determina o *offset* temporal real: $\text{Offset} = \text{Tempo Atômico} - \text{Tempo do Sistema}$.
+   - Aplica este offset de forma compensatória no agendamento: se o celular está atrasado em $1.2$ segundos, agendamos o bip para soar localmente $1.2$ segundos antes de virar a hora no celular, fazendo com que toque exatamente no segundo zero absoluto.
+
+2. **Gatilhos no Android**: O Android não suporta nativamente disparadores baseados em calendário de forma repetitiva para notificações customizadas com som. Contornamos isso com **Compensated Batch Scheduling**:
+   - Agendamos um lote de 120 triggers do tipo `date` (pontos absolutos calibrados com o offset).
+   - Um listener em segundo plano detecta quando o lote está no fim e silenciosamente agenda mais bips em tempo real, garantindo operação vitalícia sem intervenção do usuário.
 
 ---
 

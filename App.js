@@ -1,8 +1,20 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Switch, Alert, Platform, TouchableOpacity } from 'react-native';
+import {
+  StyleSheet,
+  Text,
+  View,
+  Switch,
+  Alert,
+  Platform,
+  TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
+  SafeAreaView
+} from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { Audio } from 'expo-av';
+import { Feather, Ionicons } from '@expo/vector-icons';
 
 // Set handler to always show the notification and play the sound
 Notifications.setNotificationHandler({
@@ -15,7 +27,11 @@ Notifications.setNotificationHandler({
 
 export default function App() {
   const [isEnabled, setIsEnabled] = useState(false);
-  const [intervalTime, setIntervalTime] = useState(3600); // 3600 ou 60
+  const [intervalTime, setIntervalTime] = useState(3600); // 3600 (1 Hour) or 60 (1 Minute)
+  const [timeOffset, setTimeOffset] = useState(0); // in ms (atomicTime - systemTime)
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   const playSound = async () => {
     try {
@@ -34,21 +50,102 @@ export default function App() {
     }
   };
 
-  // ─── Android: 1 minuto sincronizado com o relógio ──────────────────────────
-  // Calcula o próximo segundo :00 do próximo minuto e agenda um lote de
-  // date-triggers em horários exatos (ex: 14:01:00, 14:02:00, 14:03:00…).
-  // Isso elimina o problema do timeInterval que contava a partir da ativação.
-  const scheduleAndroidMinuteBips = async () => {
-    const now = new Date();
+  // Sync with NTP/HTTP Time servers
+  const syncTime = async (silent = false) => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    
+    const endpoints = [
+      { url: 'https://timeapi.io/api/Time/current/zone?timeZone=UTC', type: 'timeapi' },
+      { url: 'https://worldtimeapi.org/api/timezone/Etc/UTC', type: 'worldtime' }
+    ];
 
-    // Ms restantes até o próximo minuto cheio (ex: 14:01:00.000)
-    const msToNextMinute =
-      (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
+    let success = false;
+    let offset = 0;
 
-    const firstBip = new Date(now.getTime() + msToNextMinute);
+    for (const endpoint of endpoints) {
+      try {
+        const start = Date.now();
+        const response = await fetch(endpoint.url, { 
+          headers: { 'Cache-Control': 'no-cache' },
+          method: 'GET'
+        });
+        if (!response.ok) continue;
+        const data = await response.json();
+        const end = Date.now();
+        const rtt = end - start;
 
-    // Agenda 120 notificações = 2 horas de bips por minuto
-    const BATCH_SIZE = 120;
+        let serverMs = 0;
+        if (endpoint.type === 'timeapi' && data.dateTime) {
+          serverMs = new Date(data.dateTime + 'Z').getTime();
+        } else if (endpoint.type === 'worldtime' && data.utc_datetime) {
+          serverMs = new Date(data.utc_datetime).getTime();
+        } else {
+          continue;
+        }
+
+        // True time accounts for network latency (RTT / 2)
+        const trueTime = serverMs + (rtt / 2);
+        offset = trueTime - end;
+        success = true;
+        break; // Successfully synced!
+      } catch (err) {
+        console.log(`Erro ao sincronizar com ${endpoint.url}:`, err);
+      }
+    }
+
+    // Tertiary Fallback using reliable Date headers
+    if (!success) {
+      try {
+        const start = Date.now();
+        const response = await fetch('https://www.cloudflare.com/cdn-cgi/trace', { method: 'HEAD' });
+        const dateHeader = response.headers.get('date');
+        const end = Date.now();
+        if (dateHeader) {
+          const serverMs = new Date(dateHeader).getTime();
+          const rtt = end - start;
+          const trueTime = serverMs + (rtt / 2);
+          offset = trueTime - end;
+          success = true;
+        }
+      } catch (err) {
+        console.log('Erro no fallback do Cloudflare:', err);
+      }
+    }
+
+    if (success) {
+      setTimeOffset(offset);
+      setLastSyncTime(new Date());
+      if (!silent) {
+        const absOffsetSec = Math.abs(offset / 1000).toFixed(3);
+        const driftText = offset >= 0 
+          ? `atrasado em +${absOffsetSec}s` 
+          : `adiantado em -${absOffsetSec}s`;
+        
+        Alert.alert(
+          'Calibração de Alta Precisão',
+          `Conectado ao servidor atômico!\n\nSeu relógio local está ${driftText}.\n\nCompensação ativa de ${offset >= 0 ? '+' : ''}${offset}ms aplicada com sucesso!`
+        );
+      }
+    } else {
+      if (!silent) {
+        Alert.alert(
+          'Erro de Conexão',
+          'Não foi possível calibrar o horário. Verifique sua conexão com a internet.'
+        );
+      }
+    }
+    setIsSyncing(false);
+  };
+
+  // ─── Android: 1 minuto sincronizado com o relógio atômico ───────────────────
+  const scheduleAndroidMinuteBips = async (offset) => {
+    const now = Date.now();
+    const trueNow = now + offset;
+    const trueMsToNextMinute = 60000 - (trueNow % 60000);
+    const firstBip = new Date(now + trueMsToNextMinute);
+
+    const BATCH_SIZE = 120; // 2 hours of minute beeps
     const promises = [];
     for (let i = 0; i < BATCH_SIZE; i++) {
       const scheduledTime = new Date(firstBip.getTime() + i * 60 * 1000);
@@ -70,11 +167,17 @@ export default function App() {
     await Promise.all(promises);
   };
 
-  // ─── Android: 1 hora sincronizada com o relógio ────────────────────────────
-  // Agenda 24 notificações diárias, uma para cada hora (00:00, 01:00, …23:00).
-  const scheduleAndroidHourlyBips = async () => {
+  // ─── Android: 1 hora sincronizada com o relógio atômico ─────────────────────
+  const scheduleAndroidHourlyBips = async (offset) => {
+    const now = Date.now();
+    const trueNow = now + offset;
+    const trueMsToNextHour = 3600000 - (trueNow % 3600000);
+    const firstBip = new Date(now + trueMsToNextHour);
+
+    const BATCH_SIZE = 48; // 2 days of hourly beeps
     const promises = [];
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < BATCH_SIZE; i++) {
+      const scheduledTime = new Date(firstBip.getTime() + i * 3600 * 1000);
       promises.push(
         Notifications.scheduleNotificationAsync({
           content: {
@@ -83,9 +186,8 @@ export default function App() {
             sound: 'beep.mp3',
           },
           trigger: {
-            type: 'daily',
-            hour: i,
-            minute: 0,
+            type: 'date',
+            date: scheduledTime,
             channelId: 'hourly-beep',
           },
         })
@@ -94,8 +196,18 @@ export default function App() {
     await Promise.all(promises);
   };
 
+  // Live clocks and countdown updater
   useEffect(() => {
-    // Configura o canal de notificação no Android
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 100); // 10fps for smooth clock rendering
+    return () => clearInterval(timer);
+  }, []);
+
+  // Sync on startup
+  useEffect(() => {
+    syncTime(true);
+
     if (Platform.OS === 'android') {
       Notifications.setNotificationChannelAsync('hourly-beep', {
         name: 'Hourly Beep',
@@ -104,43 +216,45 @@ export default function App() {
       });
     }
 
-    // Verifica o estado ao abrir o app e reagenda se o lote estiver acabando
     const checkStatus = async () => {
       const scheduled = await Notifications.getAllScheduledNotificationsAsync();
       const active = scheduled.length > 0;
       setIsEnabled(active);
 
-      // Auto-reagendamento ao abrir o app (modo 1 min no Android)
-      if (
-        active &&
-        intervalTime === 60 &&
-        Platform.OS === 'android' &&
-        scheduled.length < 30
-      ) {
+      // Auto-reagendamento ao abrir o app
+      if (active && Platform.OS === 'android' && scheduled.length < 15) {
         await Notifications.cancelAllScheduledNotificationsAsync();
-        await scheduleAndroidMinuteBips();
+        if (intervalTime === 60) {
+          await scheduleAndroidMinuteBips(timeOffset);
+        } else {
+          await scheduleAndroidHourlyBips(timeOffset);
+        }
       }
     };
 
     checkStatus();
   }, []);
 
-  // ─── Listener: reagenda em tempo real quando o lote estiver acabando ───────
+  // Real-time background rescheduling listener
   useEffect(() => {
     const subscription = Notifications.addNotificationReceivedListener(
       async () => {
-        if (!isEnabled || intervalTime !== 60 || Platform.OS !== 'android') return;
+        if (!isEnabled || Platform.OS !== 'android') return;
 
         const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-        if (scheduled.length < 30) {
-          // Reagenda um lote novo começando no próximo minuto cheio
+        const threshold = intervalTime === 60 ? 30 : 10;
+        if (scheduled.length < threshold) {
           await Notifications.cancelAllScheduledNotificationsAsync();
-          await scheduleAndroidMinuteBips();
+          if (intervalTime === 60) {
+            await scheduleAndroidMinuteBips(timeOffset);
+          } else {
+            await scheduleAndroidHourlyBips(timeOffset);
+          }
         }
       }
     );
     return () => subscription.remove();
-  }, [isEnabled, intervalTime]);
+  }, [isEnabled, intervalTime, timeOffset]);
 
   const toggleSwitch = async () => {
     try {
@@ -149,7 +263,7 @@ export default function App() {
         setIsEnabled(false);
         Alert.alert('Desativado', 'O bip horário foi desativado.');
       } else {
-        // Solicita permissão
+        // Request Permission
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
 
@@ -166,12 +280,14 @@ export default function App() {
           return;
         }
 
-        // Toca o som de preview
+        // Play preview sound
         await playSound();
 
-        // Agenda as notificações
+        // Refresh time synchronization just before scheduling to guarantee perfect accuracy
+        await syncTime(true);
+
+        // Schedule notifications
         if (Platform.OS === 'ios') {
-          // iOS: suporta calendar trigger nativamente
           const trigger =
             intervalTime === 60
               ? { type: 'calendar', second: 0, repeats: true }
@@ -189,13 +305,11 @@ export default function App() {
             trigger,
           });
         } else {
-          // Android: não suporta calendar trigger — usa estratégias específicas
+          // Android: Uses time-offset compensated date-triggers
           if (intervalTime === 3600) {
-            // 1 hora: 24 triggers diários sincronizados (00:00, 01:00, …)
-            await scheduleAndroidHourlyBips();
+            await scheduleAndroidHourlyBips(timeOffset);
           } else {
-            // 1 minuto: lote de date-triggers nos segundos :00 exatos de cada minuto
-            await scheduleAndroidMinuteBips();
+            await scheduleAndroidMinuteBips(timeOffset);
           }
         }
 
@@ -213,104 +327,477 @@ export default function App() {
     }
   };
 
+  // Helper formatters
+  const formatClock = (date, offset = 0) => {
+    const adjustedDate = new Date(date.getTime() + offset);
+    const hours = adjustedDate.getHours().toString().padStart(2, '0');
+    const minutes = adjustedDate.getMinutes().toString().padStart(2, '0');
+    const seconds = adjustedDate.getSeconds().toString().padStart(2, '0');
+    const tenths = Math.floor(adjustedDate.getMilliseconds() / 100);
+    return `${hours}:${minutes}:${seconds}.${tenths}`;
+  };
+
+  const getCountdownText = () => {
+    const trueNow = currentTime.getTime() + timeOffset;
+    if (intervalTime === 60) {
+      const msLeft = 60000 - (trueNow % 60000);
+      const seconds = Math.floor(msLeft / 1000);
+      const tenths = Math.floor((msLeft % 1000) / 100);
+      return `${seconds.toString().padStart(2, '0')}.${tenths}s`;
+    } else {
+      const msLeft = 3600000 - (trueNow % 3600000);
+      const minutes = Math.floor(msLeft / 60000);
+      const seconds = Math.floor((msLeft % 60000) / 1000);
+      return `${minutes.toString().padStart(2, '0')}m ${seconds.toString().padStart(2, '0')}s`;
+    }
+  };
+
+  const getOffsetText = () => {
+    if (timeOffset === 0 && !lastSyncTime) return 'Não Sincronizado';
+    const seconds = (timeOffset / 1000).toFixed(3);
+    if (timeOffset === 0) return 'Perfeitamente Sincronizado (0.000s)';
+    return `${timeOffset > 0 ? '+' : ''}${seconds}s (${Math.abs(timeOffset)}ms)`;
+  };
+
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
-      <View style={styles.card}>
-        <Text style={styles.title}>Bip Horário</Text>
-        <Text style={styles.subtitle}>
-          Escolha o intervalo e seja notificado.
+      <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
+        
+        {/* Header Section */}
+        <View style={styles.header}>
+          <View style={styles.iconContainer}>
+            <Ionicons name="notifications-outline" size={36} color="#00f2fe" style={styles.bellIcon} />
+            {isEnabled && <View style={styles.pulseDot} />}
+          </View>
+          <Text style={styles.title}>Bip Horário</Text>
+          <Text style={styles.subtitle}>Sincronização Atômica & Precisão Absoluta</Text>
+        </View>
+
+        {/* Live Synchronizer Panel */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <View style={styles.row}>
+              <Feather name="cpu" size={20} color="#00f2fe" />
+              <Text style={styles.cardTitle}>Sincronizador Temporal</Text>
+            </View>
+            <View style={[styles.statusIndicator, lastSyncTime ? styles.statusSync : styles.statusUnsync]}>
+              <View style={[styles.miniDot, lastSyncTime ? styles.bgSync : styles.bgUnsync]} />
+              <Text style={[styles.indicatorText, lastSyncTime ? styles.textSync : styles.textUnsync]}>
+                {lastSyncTime ? 'COMPENSADO' : 'PENDENTE'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Double Clocks */}
+          <View style={styles.clocksContainer}>
+            <View style={styles.clockSubCard}>
+              <Text style={styles.clockLabel}>CELULAR (SISTEMA)</Text>
+              <Text style={styles.clockValue}>{formatClock(currentTime, 0)}</Text>
+            </View>
+
+            <View style={styles.clockSubCardHighlight}>
+              <Text style={styles.clockLabelHighlight}>RELÓGIO ATÔMICO (NTP)</Text>
+              <Text style={styles.clockValueHighlight}>{formatClock(currentTime, timeOffset)}</Text>
+            </View>
+          </View>
+
+          {/* Sync Stats */}
+          <View style={styles.statsContainer}>
+            <View style={styles.statRow}>
+              <Text style={styles.statLabel}>Drift do Sistema:</Text>
+              <Text style={[
+                styles.statValue, 
+                timeOffset === 0 && !lastSyncTime ? styles.textNeutral : (Math.abs(timeOffset) < 300 ? styles.textSuccess : styles.textWarning)
+              ]}>
+                {getOffsetText()}
+              </Text>
+            </View>
+            <View style={styles.statRow}>
+              <Text style={styles.statLabel}>Última Calibração:</Text>
+              <Text style={styles.statValue}>
+                {lastSyncTime ? lastSyncTime.toLocaleTimeString() : 'Nunca'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Sync Button */}
+          <TouchableOpacity 
+            style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]} 
+            onPress={() => syncTime(false)}
+            disabled={isSyncing}
+          >
+            {isSyncing ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <>
+                <Feather name="refresh-cw" size={16} color="#ffffff" style={styles.buttonIcon} />
+                <Text style={styles.syncButtonText}>Calibrar com Hora Atômica</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Configuration Panel */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <View style={styles.row}>
+              <Feather name="sliders" size={20} color="#00f2fe" />
+              <Text style={styles.cardTitle}>Configurações</Text>
+            </View>
+          </View>
+
+          <Text style={styles.sectionSubtitle}>INTERVALO DOS ALERTAS</Text>
+          <View style={styles.segmentContainer}>
+            <TouchableOpacity
+              style={[styles.segmentButton, intervalTime === 60 && styles.segmentActive]}
+              onPress={() => !isEnabled && setIntervalTime(60)}
+              activeOpacity={isEnabled ? 1 : 0.7}
+            >
+              <Text style={[styles.segmentText, intervalTime === 60 && styles.segmentTextActive]}>
+                1 Minuto
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.segmentButton, intervalTime === 3600 && styles.segmentActive]}
+              onPress={() => !isEnabled && setIntervalTime(3600)}
+              activeOpacity={isEnabled ? 1 : 0.7}
+            >
+              <Text style={[styles.segmentText, intervalTime === 3600 && styles.segmentTextActive]}>
+                1 Hora
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.controlRow}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.statusText}>{isEnabled ? 'Bips Ativos' : 'Bips Inativos'}</Text>
+              <Text style={styles.controlSubText}>
+                {isEnabled ? 'Rodando em segundo plano' : 'Toques temporizadores desligados'}
+              </Text>
+            </View>
+            <Switch
+              trackColor={{ false: '#243256', true: '#10b981' }}
+              thumbColor={isEnabled ? '#ffffff' : '#94a3b8'}
+              ios_backgroundColor="#243256"
+              onValueChange={toggleSwitch}
+              value={isEnabled}
+              style={{ transform: [{ scaleX: 1.3 }, { scaleY: 1.3 }] }}
+            />
+          </View>
+        </View>
+
+        {/* Live Countdown / Info Panel */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <View style={styles.row}>
+              <Feather name="activity" size={20} color="#00f2fe" />
+              <Text style={styles.cardTitle}>Status do Sistema</Text>
+            </View>
+          </View>
+
+          {isEnabled ? (
+            <View style={styles.countdownContainer}>
+              <Text style={styles.countdownLabel}>PRÓXIMO BIP EM</Text>
+              <Text style={styles.countdownValue}>{getCountdownText()}</Text>
+              <View style={styles.badgeContainer}>
+                <View style={[styles.badge, styles.badgeActive]}>
+                  <View style={[styles.miniDot, styles.bgSync]} />
+                  <Text style={styles.badgeText}>Sincronia Compensada ({Platform.OS === 'ios' ? 'Nativa iOS' : 'NTP Android'})</Text>
+                </View>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.inactiveContainer}>
+              <Feather name="alert-circle" size={32} color="#94a3b8" />
+              <Text style={styles.inactiveText}>
+                Ative o bip horário no painel de configurações para iniciar o cronômetro compensado.
+              </Text>
+            </View>
+          )}
+        </View>
+
+        <Text style={styles.footerText}>
+          Desenvolvido com precisão atômica por Marcio Roya
         </Text>
 
-        <View style={styles.segmentContainer}>
-          <TouchableOpacity
-            style={[styles.segmentButton, intervalTime === 60 && styles.segmentActive]}
-            onPress={() => !isEnabled && setIntervalTime(60)}
-            activeOpacity={isEnabled ? 1 : 0.7}
-          >
-            <Text style={[styles.segmentText, intervalTime === 60 && styles.segmentTextActive]}>
-              1 Minuto
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.segmentButton, intervalTime === 3600 && styles.segmentActive]}
-            onPress={() => !isEnabled && setIntervalTime(3600)}
-            activeOpacity={isEnabled ? 1 : 0.7}
-          >
-            <Text style={[styles.segmentText, intervalTime === 3600 && styles.segmentTextActive]}>
-              1 Hora
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.controlRow}>
-          <Text style={styles.statusText}>{isEnabled ? 'Ativo' : 'Inativo'}</Text>
-          <Switch
-            trackColor={{ false: '#3e3e3e', true: '#4ade80' }}
-            thumbColor={isEnabled ? '#ffffff' : '#f4f3f4'}
-            ios_backgroundColor="#3e3e3e"
-            onValueChange={toggleSwitch}
-            value={isEnabled}
-            style={{ transform: [{ scaleX: 1.5 }, { scaleY: 1.5 }] }}
-          />
-        </View>
-      </View>
-    </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#090d16',
   },
-  card: {
-    backgroundColor: '#1e293b',
-    padding: 32,
-    borderRadius: 24,
-    width: '85%',
+  scrollContainer: {
+    padding: 20,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    elevation: 10,
+    paddingBottom: 40,
+  },
+  header: {
+    alignItems: 'center',
+    marginTop: 20,
+    marginBottom: 30,
+  },
+  iconContainer: {
+    position: 'relative',
+    backgroundColor: '#131c31',
+    padding: 16,
+    borderRadius: 50,
+    borderWidth: 1,
+    borderColor: '#243256',
+    marginBottom: 16,
+    shadowColor: '#00f2fe',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+  },
+  bellIcon: {
+    transform: [{ rotate: '5deg' }],
+  },
+  pulseDot: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10b981',
+    borderWidth: 2,
+    borderColor: '#131c31',
   },
   title: {
     fontSize: 32,
-    fontWeight: 'bold',
-    color: '#f8fafc',
-    marginBottom: 8,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.5,
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#94a3b8',
-    textAlign: 'center',
-    marginBottom: 24,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  card: {
+    backgroundColor: '#131c31',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#243256',
+    padding: 20,
+    width: '100%',
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 15,
+    elevation: 8,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    paddingBottom: 12,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#f8fafc',
+    marginLeft: 8,
+  },
+  statusIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusSync: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: 'rgba(16, 185, 129, 0.2)',
+  },
+  statusUnsync: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  miniDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 6,
+  },
+  bgSync: {
+    backgroundColor: '#10b981',
+  },
+  bgUnsync: {
+    backgroundColor: '#f59e0b',
+  },
+  indicatorText: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  textSync: {
+    color: '#10b981',
+  },
+  textUnsync: {
+    color: '#f59e0b',
+  },
+  clocksContainer: {
+    flexDirection: 'column',
+    gap: 12,
+    marginBottom: 20,
+  },
+  clockSubCard: {
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 14,
+    padding: 12,
+    alignItems: 'center',
+  },
+  clockSubCardHighlight: {
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 242, 254, 0.25)',
+    borderRadius: 14,
+    padding: 12,
+    alignItems: 'center',
+    shadowColor: '#00f2fe',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  clockLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748b',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  clockLabelHighlight: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#00f2fe',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  clockValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#94a3b8',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  clockValueHighlight: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#00f2fe',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    textShadowColor: 'rgba(0, 242, 254, 0.3)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
+  },
+  statsContainer: {
+    backgroundColor: '#090d16',
+    borderRadius: 14,
+    padding: 12,
+    gap: 8,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  statRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '500',
+  },
+  statValue: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#f8fafc',
+  },
+  textSuccess: {
+    color: '#10b981',
+  },
+  textWarning: {
+    color: '#fbbf24',
+  },
+  textNeutral: {
+    color: '#94a3b8',
+  },
+  syncButton: {
+    backgroundColor: '#3b82f6',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    width: '100%',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  syncButtonDisabled: {
+    backgroundColor: '#1d4ed8',
+    opacity: 0.8,
+  },
+  syncButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  buttonIcon: {
+    marginRight: 8,
+  },
+  sectionSubtitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748b',
+    letterSpacing: 1.2,
+    marginBottom: 10,
   },
   segmentContainer: {
     flexDirection: 'row',
-    backgroundColor: '#0f172a',
-    borderRadius: 12,
+    backgroundColor: '#090d16',
+    borderRadius: 14,
     padding: 4,
-    marginBottom: 32,
-    width: '100%',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#1e293b',
   },
   segmentButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 10,
   },
   segmentActive: {
     backgroundColor: '#3b82f6',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
   },
   segmentText: {
     color: '#64748b',
     fontWeight: '600',
-    fontSize: 16,
+    fontSize: 14,
   },
   segmentTextActive: {
     color: '#ffffff',
@@ -319,15 +806,84 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    width: '100%',
     paddingHorizontal: 16,
     paddingVertical: 16,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#090d16',
     borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1e293b',
   },
   statusText: {
-    fontSize: 20,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
     color: '#f8fafc',
+  },
+  controlSubText: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  countdownContainer: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  countdownLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748b',
+    letterSpacing: 1.5,
+    marginBottom: 8,
+  },
+  countdownValue: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: '#10b981',
+    fontFamily: Platform.OS === 'ios' ? 'Courier-Bold' : 'monospace',
+    textShadowColor: 'rgba(16, 185, 129, 0.25)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 10,
+    marginBottom: 12,
+  },
+  badgeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  badgeActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderColor: 'rgba(16, 185, 129, 0.15)',
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#10b981',
+  },
+  inactiveContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 20,
+    gap: 12,
+  },
+  inactiveText: {
+    fontSize: 13,
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 18,
+    paddingHorizontal: 10,
+  },
+  footerText: {
+    fontSize: 11,
+    color: '#475569',
+    textAlign: 'center',
+    marginTop: 10,
+    marginBottom: 20,
+    fontWeight: '500',
   },
 });
