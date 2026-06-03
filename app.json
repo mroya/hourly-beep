@@ -2,7 +2,7 @@
   "expo": {
     "name": "Hourly Beep",
     "slug": "hourly-beep",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -51,6 +51,12 @@
       "eas": {
         "projectId": "4bd23878-f837-4fe3-855b-fe4eeac53e23"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/4bd23878-f837-4fe3-855b-fe4eeac53e23"
     }
   }
 }

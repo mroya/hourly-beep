@@ -43,6 +43,12 @@ export default function App() {
       const { sound } = await Audio.Sound.createAsync(
         require('./assets/beep.mp3')
       );
+      // Libera memória nativa assim que o som terminar de tocar
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) {
+          sound.unloadAsync();
+        }
+      });
       await sound.playAsync();
     } catch (error) {
       console.log('Erro ao tocar som', error);
@@ -136,6 +142,7 @@ export default function App() {
       }
     }
     setIsSyncing(false);
+    return success ? offset : null;
   };
 
   // ─── Android: 1 minuto sincronizado com o relógio atômico ───────────────────
@@ -164,14 +171,16 @@ export default function App() {
         })
       );
     }
-    await Promise.all(promises);
+    await Promise.allSettled(promises);
   };
 
   // ─── Android: 1 hora sincronizada com o relógio atômico ─────────────────────
   const scheduleAndroidHourlyBips = async (offset) => {
     const now = Date.now();
     const trueNow = now + offset;
-    const trueMsToNextHour = 3600000 - (trueNow % 3600000);
+    const trueDate = new Date(trueNow);
+    const msPastHour = trueDate.getMinutes() * 60000 + trueDate.getSeconds() * 1000 + trueDate.getMilliseconds();
+    const trueMsToNextHour = 3600000 - msPastHour;
     const firstBip = new Date(now + trueMsToNextHour);
 
     const BATCH_SIZE = 48; // 2 days of hourly beeps
@@ -193,7 +202,7 @@ export default function App() {
         })
       );
     }
-    await Promise.all(promises);
+    await Promise.allSettled(promises);
   };
 
   // Live clocks and countdown updater
@@ -204,35 +213,36 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Sync on startup
+  // Sync on startup — aguarda syncTime para usar o offset real (evita stale closure)
   useEffect(() => {
-    syncTime(true);
+    const init = async () => {
+      const syncedOffset = await syncTime(true);
+      const currentOffset = syncedOffset ?? 0;
 
-    if (Platform.OS === 'android') {
-      Notifications.setNotificationChannelAsync('hourly-beep', {
-        name: 'Hourly Beep',
-        importance: Notifications.AndroidImportance.HIGH,
-        sound: 'beep.mp3',
-      });
-    }
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('hourly-beep', {
+          name: 'Hourly Beep',
+          importance: Notifications.AndroidImportance.HIGH,
+          sound: 'beep.mp3',
+        });
+      }
 
-    const checkStatus = async () => {
       const scheduled = await Notifications.getAllScheduledNotificationsAsync();
       const active = scheduled.length > 0;
       setIsEnabled(active);
 
-      // Auto-reagendamento ao abrir o app
+      // Auto-reagendamento ao abrir o app com offset atualizado
       if (active && Platform.OS === 'android' && scheduled.length < 15) {
         await Notifications.cancelAllScheduledNotificationsAsync();
         if (intervalTime === 60) {
-          await scheduleAndroidMinuteBips(timeOffset);
+          await scheduleAndroidMinuteBips(currentOffset);
         } else {
-          await scheduleAndroidHourlyBips(timeOffset);
+          await scheduleAndroidHourlyBips(currentOffset);
         }
       }
     };
 
-    checkStatus();
+    init();
   }, []);
 
   // Real-time background rescheduling listener
@@ -280,8 +290,8 @@ export default function App() {
           return;
         }
 
-        // Play preview sound
-        await playSound();
+        // Removido o preview de som para não bipar na hora da ativação (ex: 22:12), apenas na hora cheia
+        // await playSound();
 
         // Refresh time synchronization just before scheduling to guarantee perfect accuracy
         await syncTime(true);
@@ -345,7 +355,9 @@ export default function App() {
       const tenths = Math.floor((msLeft % 1000) / 100);
       return `${seconds.toString().padStart(2, '0')}.${tenths}s`;
     } else {
-      const msLeft = 3600000 - (trueNow % 3600000);
+      const trueDate = new Date(trueNow);
+      const msPastHour = trueDate.getMinutes() * 60000 + trueDate.getSeconds() * 1000 + trueDate.getMilliseconds();
+      const msLeft = 3600000 - msPastHour;
       const minutes = Math.floor(msLeft / 60000);
       const seconds = Math.floor((msLeft % 60000) / 1000);
       return `${minutes.toString().padStart(2, '0')}m ${seconds.toString().padStart(2, '0')}s`;
@@ -518,7 +530,7 @@ export default function App() {
         </View>
 
         <Text style={styles.footerText}>
-          Desenvolvido com precisão atômica por Marcio Roya
+          Desenvolvido com precisão atômica por Marcio Roya{'\n'}Versão 1.0.1 (Atualizado)
         </Text>
 
       </ScrollView>
