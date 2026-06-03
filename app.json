@@ -2,7 +2,7 @@
   "expo": {
     "name": "Hourly Beep",
     "slug": "hourly-beep",
-    "version": "1.0.1",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -42,7 +42,11 @@
           "icon": "./assets/icon.png",
           "color": "#ffffff",
           "sounds": [
-            "./assets/beep.mp3"
+            "./assets/beep.mp3",
+            "./assets/sounds/sino.wav",
+            "./assets/sounds/gongo.wav",
+            "./assets/sounds/digital.wav",
+            "./assets/sounds/suave.wav"
           ]
         }
       ]

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,14 +9,32 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  SafeAreaView
+  SafeAreaView,
 } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
-import { Audio } from 'expo-av';
 import { Feather, Ionicons } from '@expo/vector-icons';
 
-// Set handler to always show the notification and play the sound
+// Services
+import { performTimeSync } from './services/timeSync';
+import {
+  INTERVALS,
+  setupNotificationChannel,
+  scheduleNotifications,
+  cancelAllNotifications,
+  getScheduledCount,
+} from './services/notifications';
+import { SOUNDS, playPreviewSound, getSoundById } from './services/audio';
+import { usePremium, loadSettings, saveSettings } from './services/premium';
+
+// Components
+import PremiumGate from './components/PremiumGate';
+import UpgradeScreen from './components/UpgradeScreen';
+
+// Utils
+import { formatClock, getCountdownText, getOffsetText, getIntervalLabel } from './utils/formatters';
+
+// Handler global de notificações
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -26,319 +44,177 @@ Notifications.setNotificationHandler({
 });
 
 export default function App() {
+  // ─── Estado Core ──────────────────────────────────────────────────────────────
   const [isEnabled, setIsEnabled] = useState(false);
-  const [intervalTime, setIntervalTime] = useState(3600); // 3600 (1 Hour) or 60 (1 Minute)
-  const [timeOffset, setTimeOffset] = useState(0); // in ms (atomicTime - systemTime)
+  const [intervalTime, setIntervalTime] = useState(3600);
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  // ─── Sincronização Temporal ───────────────────────────────────────────────────
+  const [timeOffset, setTimeOffset] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
-  const [currentTime, setCurrentTime] = useState(new Date());
-  const [useAtomicSync, setUseAtomicSync] = useState(false); // false = hora do celular (padrão)
+  const [useAtomicSync, setUseAtomicSync] = useState(false);
 
-  // Offset efetivo: 0 quando usa hora do celular, timeOffset quando usa hora atômica
+  // ─── Premium ──────────────────────────────────────────────────────────────────
+  const { isPremium, unlockPremium, restorePurchase } = usePremium();
+  const [showUpgrade, setShowUpgrade] = useState(false);
+
+  // ─── Configurações Premium ────────────────────────────────────────────────────
+  const [selectedSound, setSelectedSound] = useState('beep');
+  const [quietHoursEnabled, setQuietHoursEnabled] = useState(false);
+  const [quietHoursStart, setQuietHoursStart] = useState(22);
+  const [quietHoursEnd, setQuietHoursEnd] = useState(7);
+
+  // ─── Valores Derivados ────────────────────────────────────────────────────────
   const effectiveOffset = useAtomicSync ? timeOffset : 0;
+  const settingsLoaded = useRef(false);
 
-  const playSound = async () => {
-    try {
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        playThroughEarpieceAndroid: false,
-      });
-      const { sound } = await Audio.Sound.createAsync(
-        require('./assets/beep.mp3')
-      );
-      // Libera memória nativa assim que o som terminar de tocar
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.didJustFinish) {
-          sound.unloadAsync();
-        }
-      });
-      await sound.playAsync();
-    } catch (error) {
-      console.log('Erro ao tocar som', error);
-      Alert.alert('Erro de Áudio', 'Não foi possível tocar o arquivo beep.mp3.');
-    }
-  };
-
-  // Sync with NTP/HTTP Time servers
+  // ─── Sync Time Wrapper ────────────────────────────────────────────────────────
   const syncTime = async (silent = false) => {
-    if (isSyncing) return;
+    if (isSyncing) return null;
     setIsSyncing(true);
-    
-    const endpoints = [
-      { url: 'https://timeapi.io/api/Time/current/zone?timeZone=UTC', type: 'timeapi' },
-      { url: 'https://worldtimeapi.org/api/timezone/Etc/UTC', type: 'worldtime' }
-    ];
 
-    let success = false;
-    let offset = 0;
-
-    for (const endpoint of endpoints) {
-      try {
-        const start = Date.now();
-        const response = await fetch(endpoint.url, { 
-          headers: { 'Cache-Control': 'no-cache' },
-          method: 'GET'
-        });
-        if (!response.ok) continue;
-        const data = await response.json();
-        const end = Date.now();
-        const rtt = end - start;
-
-        let serverMs = 0;
-        if (endpoint.type === 'timeapi' && data.dateTime) {
-          serverMs = new Date(data.dateTime + 'Z').getTime();
-        } else if (endpoint.type === 'worldtime' && data.utc_datetime) {
-          serverMs = new Date(data.utc_datetime).getTime();
-        } else {
-          continue;
-        }
-
-        // True time accounts for network latency (RTT / 2)
-        const trueTime = serverMs + (rtt / 2);
-        offset = trueTime - end;
-        success = true;
-        break; // Successfully synced!
-      } catch (err) {
-        console.log(`Erro ao sincronizar com ${endpoint.url}:`, err);
-      }
-    }
-
-    // Tertiary Fallback using reliable Date headers
-    if (!success) {
-      try {
-        const start = Date.now();
-        const response = await fetch('https://www.cloudflare.com/cdn-cgi/trace', { method: 'HEAD' });
-        const dateHeader = response.headers.get('date');
-        const end = Date.now();
-        if (dateHeader) {
-          const serverMs = new Date(dateHeader).getTime();
-          const rtt = end - start;
-          const trueTime = serverMs + (rtt / 2);
-          offset = trueTime - end;
-          success = true;
-        }
-      } catch (err) {
-        console.log('Erro no fallback do Cloudflare:', err);
-      }
-    }
+    const { success, offset } = await performTimeSync();
 
     if (success) {
       setTimeOffset(offset);
       setLastSyncTime(new Date());
       if (!silent) {
         const absOffsetSec = Math.abs(offset / 1000).toFixed(3);
-        const driftText = offset >= 0 
-          ? `atrasado em +${absOffsetSec}s` 
+        const driftText = offset >= 0
+          ? `atrasado em +${absOffsetSec}s`
           : `adiantado em -${absOffsetSec}s`;
-        
         Alert.alert(
           'Calibração de Alta Precisão',
           `Conectado ao servidor atômico!\n\nSeu relógio local está ${driftText}.\n\nCompensação ativa de ${offset >= 0 ? '+' : ''}${offset}ms aplicada com sucesso!`
         );
       }
-    } else {
-      if (!silent) {
-        Alert.alert(
-          'Erro de Conexão',
-          'Não foi possível calibrar o horário. Verifique sua conexão com a internet.'
-        );
-      }
+    } else if (!silent) {
+      Alert.alert(
+        'Erro de Conexão',
+        'Não foi possível calibrar o horário. Verifique sua conexão com a internet.'
+      );
     }
+
     setIsSyncing(false);
     return success ? offset : null;
   };
 
-  // ─── Android: 1 minuto sincronizado com o relógio atômico ───────────────────
-  const scheduleAndroidMinuteBips = async (offset) => {
-    const now = Date.now();
-    const trueNow = now + offset;
-    const trueMsToNextMinute = 60000 - (trueNow % 60000);
-    const firstBip = new Date(now + trueMsToNextMinute);
-
-    const BATCH_SIZE = 120; // 2 hours of minute beeps
-    const promises = [];
-    for (let i = 0; i < BATCH_SIZE; i++) {
-      const scheduledTime = new Date(firstBip.getTime() + i * 60 * 1000);
-      promises.push(
-        Notifications.scheduleNotificationAsync({
-          content: {
-            title: 'Bip Horário',
-            body: 'Mais um minuto se passou!',
-            sound: 'beep.mp3',
-          },
-          trigger: {
-            type: 'date',
-            date: scheduledTime,
-            channelId: 'hourly-beep',
-          },
-        })
-      );
-    }
-    await Promise.allSettled(promises);
-  };
-
-  // ─── Android: 1 hora sincronizada com o relógio atômico ─────────────────────
-  const scheduleAndroidHourlyBips = async (offset) => {
-    const now = Date.now();
-    const trueNow = now + offset;
-    const trueDate = new Date(trueNow);
-    const msPastHour = trueDate.getMinutes() * 60000 + trueDate.getSeconds() * 1000 + trueDate.getMilliseconds();
-    const trueMsToNextHour = 3600000 - msPastHour;
-    const firstBip = new Date(now + trueMsToNextHour);
-
-    const BATCH_SIZE = 48; // 2 days of hourly beeps
-    const promises = [];
-    for (let i = 0; i < BATCH_SIZE; i++) {
-      const scheduledTime = new Date(firstBip.getTime() + i * 3600 * 1000);
-      promises.push(
-        Notifications.scheduleNotificationAsync({
-          content: {
-            title: 'Bip Horário',
-            body: 'Mais uma hora se passou!',
-            sound: 'beep.mp3',
-          },
-          trigger: {
-            type: 'date',
-            date: scheduledTime,
-            channelId: 'hourly-beep',
-          },
-        })
-      );
-    }
-    await Promise.allSettled(promises);
-  };
-
-  // Live clocks and countdown updater
+  // ─── Persistência de Configurações ────────────────────────────────────────────
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 100); // 10fps for smooth clock rendering
+    (async () => {
+      const saved = await loadSettings();
+      if (saved) {
+        if (saved.intervalTime) setIntervalTime(saved.intervalTime);
+        if (saved.useAtomicSync !== undefined) setUseAtomicSync(saved.useAtomicSync);
+        if (saved.selectedSound) setSelectedSound(saved.selectedSound);
+        if (saved.quietHoursEnabled !== undefined) setQuietHoursEnabled(saved.quietHoursEnabled);
+        if (saved.quietHoursStart !== undefined) setQuietHoursStart(saved.quietHoursStart);
+        if (saved.quietHoursEnd !== undefined) setQuietHoursEnd(saved.quietHoursEnd);
+      }
+      settingsLoaded.current = true;
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded.current) return;
+    saveSettings({
+      intervalTime,
+      useAtomicSync,
+      selectedSound,
+      quietHoursEnabled,
+      quietHoursStart,
+      quietHoursEnd,
+    });
+  }, [intervalTime, useAtomicSync, selectedSound, quietHoursEnabled, quietHoursStart, quietHoursEnd]);
+
+  // ─── Relógio em tempo real ────────────────────────────────────────────────────
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 100);
     return () => clearInterval(timer);
   }, []);
 
-  // Inicialização — configura canal e verifica status das notificações
+  // ─── Inicialização ────────────────────────────────────────────────────────────
   useEffect(() => {
     const init = async () => {
-      // Sincroniza em background para ter o offset disponível caso o usuário ative
       await syncTime(true);
+      await setupNotificationChannel();
 
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('hourly-beep', {
-          name: 'Hourly Beep',
-          importance: Notifications.AndroidImportance.HIGH,
-          sound: 'beep.mp3',
-        });
-      }
-
-      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-      const active = scheduled.length > 0;
+      const count = await getScheduledCount();
+      const active = count > 0;
       setIsEnabled(active);
 
-      // Auto-reagendamento ao abrir o app (usa offset=0 por padrão = hora do celular)
-      if (active && Platform.OS === 'android' && scheduled.length < 15) {
-        await Notifications.cancelAllScheduledNotificationsAsync();
-        if (intervalTime === 60) {
-          await scheduleAndroidMinuteBips(0);
-        } else {
-          await scheduleAndroidHourlyBips(0);
-        }
+      // Auto-reagendamento se poucas notificações restam
+      if (active && Platform.OS === 'android' && count < 15) {
+        await cancelAllNotifications();
+        await scheduleNotifications({
+          intervalSeconds: intervalTime,
+          offset: 0, // Padrão: hora do celular
+          soundFile: getSoundById(selectedSound).notifSound,
+          quietHours: quietHoursEnabled ? { enabled: true, start: quietHoursStart, end: quietHoursEnd } : null,
+        });
       }
     };
-
     init();
   }, []);
 
-  // Real-time background rescheduling listener
+  // ─── Re-agendamento em background ────────────────────────────────────────────
   useEffect(() => {
-    const subscription = Notifications.addNotificationReceivedListener(
-      async () => {
-        if (!isEnabled || Platform.OS !== 'android') return;
+    const subscription = Notifications.addNotificationReceivedListener(async () => {
+      if (!isEnabled || Platform.OS !== 'android') return;
 
-        const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-        const threshold = intervalTime === 60 ? 30 : 10;
-        if (scheduled.length < threshold) {
-          await Notifications.cancelAllScheduledNotificationsAsync();
-          if (intervalTime === 60) {
-            await scheduleAndroidMinuteBips(effectiveOffset);
-          } else {
-            await scheduleAndroidHourlyBips(effectiveOffset);
-          }
-        }
+      const count = await getScheduledCount();
+      const threshold = intervalTime <= 60 ? 30 : 10;
+      if (count < threshold) {
+        await cancelAllNotifications();
+        await scheduleNotifications({
+          intervalSeconds: intervalTime,
+          offset: effectiveOffset,
+          soundFile: getSoundById(selectedSound).notifSound,
+          quietHours: quietHoursEnabled ? { enabled: true, start: quietHoursStart, end: quietHoursEnd } : null,
+        });
       }
-    );
+    });
     return () => subscription.remove();
-  }, [isEnabled, intervalTime, effectiveOffset]);
+  }, [isEnabled, intervalTime, effectiveOffset, selectedSound, quietHoursEnabled, quietHoursStart, quietHoursEnd]);
 
+  // ─── Toggle Bips ──────────────────────────────────────────────────────────────
   const toggleSwitch = async () => {
     try {
       if (isEnabled) {
-        await Notifications.cancelAllScheduledNotificationsAsync();
+        await cancelAllNotifications();
         setIsEnabled(false);
         Alert.alert('Desativado', 'O bip horário foi desativado.');
       } else {
-        // Request Permission
+        // Permissão
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
-
         if (existingStatus !== 'granted') {
           const { status } = await Notifications.requestPermissionsAsync();
           finalStatus = status;
         }
-
         if (finalStatus !== 'granted') {
-          Alert.alert(
-            'Permissão Negada',
-            'Você precisa habilitar as notificações para usar o Bip Horário.'
-          );
+          Alert.alert('Permissão Negada', 'Você precisa habilitar as notificações para usar o Bip Horário.');
           return;
         }
 
-        // Removido o preview de som para não bipar na hora da ativação (ex: 22:12), apenas na hora cheia
-        // await playSound();
-
-        // Se sincronia atômica ativa, atualiza offset antes de agendar
+        // Sincronizar se modo atômico ativo
+        let schedulingOffset = 0;
         if (useAtomicSync) {
-          await syncTime(true);
+          const syncedOffset = await syncTime(true);
+          schedulingOffset = syncedOffset ?? timeOffset;
         }
 
-        // Offset a ser usado no agendamento
-        const schedulingOffset = useAtomicSync ? timeOffset : 0;
-
-        // Schedule notifications
-        if (Platform.OS === 'ios') {
-          const trigger =
-            intervalTime === 60
-              ? { type: 'calendar', second: 0, repeats: true }
-              : { type: 'calendar', minute: 0, second: 0, repeats: true };
-
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: 'Bip Horário',
-              body:
-                intervalTime === 60
-                  ? 'Mais um minuto se passou!'
-                  : 'Mais uma hora se passou!',
-              sound: 'beep.mp3',
-            },
-            trigger,
-          });
-        } else {
-          // Android: date-triggers (compensados ou não, conforme configuração)
-          if (intervalTime === 3600) {
-            await scheduleAndroidHourlyBips(schedulingOffset);
-          } else {
-            await scheduleAndroidMinuteBips(schedulingOffset);
-          }
-        }
+        // Agendar
+        await scheduleNotifications({
+          intervalSeconds: intervalTime,
+          offset: schedulingOffset,
+          soundFile: getSoundById(selectedSound).notifSound,
+          quietHours: quietHoursEnabled ? { enabled: true, start: quietHoursStart, end: quietHoursEnd } : null,
+        });
 
         setIsEnabled(true);
-        Alert.alert(
-          'Ativado',
-          `O bip foi ativado e tocará a cada ${
-            intervalTime === 60 ? 'minuto' : 'hora'
-          } em ponto.`
-        );
+        Alert.alert('Ativado', `O bip foi ativado e tocará a cada ${getIntervalLabel(intervalTime)} em ponto.`);
       }
     } catch (error) {
       console.error(error);
@@ -346,63 +222,35 @@ export default function App() {
     }
   };
 
-  // Helper formatters
-  const formatClock = (date, offset = 0) => {
-    const adjustedDate = new Date(date.getTime() + offset);
-    const hours = adjustedDate.getHours().toString().padStart(2, '0');
-    const minutes = adjustedDate.getMinutes().toString().padStart(2, '0');
-    const seconds = adjustedDate.getSeconds().toString().padStart(2, '0');
-    const tenths = Math.floor(adjustedDate.getMilliseconds() / 100);
-    return `${hours}:${minutes}:${seconds}.${tenths}`;
-  };
-
-  const getCountdownText = () => {
-    const adjustedNow = currentTime.getTime() + effectiveOffset;
-    if (intervalTime === 60) {
-      const msLeft = 60000 - (adjustedNow % 60000);
-      const seconds = Math.floor(msLeft / 1000);
-      const tenths = Math.floor((msLeft % 1000) / 100);
-      return `${seconds.toString().padStart(2, '0')}.${tenths}s`;
-    } else {
-      const adjustedDate = new Date(adjustedNow);
-      const msPastHour = adjustedDate.getMinutes() * 60000 + adjustedDate.getSeconds() * 1000 + adjustedDate.getMilliseconds();
-      const msLeft = 3600000 - msPastHour;
-      const minutes = Math.floor(msLeft / 60000);
-      const seconds = Math.floor((msLeft % 60000) / 1000);
-      return `${minutes.toString().padStart(2, '0')}m ${seconds.toString().padStart(2, '0')}s`;
-    }
-  };
-
-  const getOffsetText = () => {
-    if (timeOffset === 0 && !lastSyncTime) return 'Não Sincronizado';
-    const seconds = (timeOffset / 1000).toFixed(3);
-    if (timeOffset === 0) return 'Perfeitamente Sincronizado (0.000s)';
-    return `${timeOffset > 0 ? '+' : ''}${seconds}s (${Math.abs(timeOffset)}ms)`;
-  };
-
+  // ─── Helpers de modo ──────────────────────────────────────────────────────────
   const getSyncModeText = () => {
-    if (useAtomicSync) {
-      return lastSyncTime ? 'NTP Compensado' : 'NTP Pendente';
-    }
+    if (useAtomicSync) return lastSyncTime ? 'NTP Compensado' : 'NTP Pendente';
     return 'Relógio do Celular';
   };
 
+  const getQuietHoursText = () => {
+    return `${quietHoursStart.toString().padStart(2, '0')}:00 — ${quietHoursEnd.toString().padStart(2, '0')}:00`;
+  };
+
+  // ─── UI ───────────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
-        
-        {/* Header Section */}
+
+        {/* ─── Header ──────────────────────────────────────────────────── */}
         <View style={styles.header}>
           <View style={styles.iconContainer}>
             <Ionicons name="notifications-outline" size={36} color="#00f2fe" style={styles.bellIcon} />
             {isEnabled && <View style={styles.pulseDot} />}
           </View>
           <Text style={styles.title}>Bip Horário</Text>
-          <Text style={styles.subtitle}>{useAtomicSync ? 'Sincronização Atômica Ativa' : 'Sincronizado com Relógio do Celular'}</Text>
+          <Text style={styles.subtitle}>
+            {useAtomicSync ? 'Sincronização Atômica Ativa' : 'Sincronizado com Relógio do Celular'}
+          </Text>
         </View>
 
-        {/* Live Synchronizer Panel — visível apenas quando sincronia atômica está ativa */}
+        {/* ─── Painel NTP (quando ativo) ───────────────────────────────── */}
         {useAtomicSync && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
@@ -418,28 +266,25 @@ export default function App() {
               </View>
             </View>
 
-            {/* Double Clocks */}
             <View style={styles.clocksContainer}>
               <View style={styles.clockSubCard}>
                 <Text style={styles.clockLabel}>CELULAR (SISTEMA)</Text>
                 <Text style={styles.clockValue}>{formatClock(currentTime, 0)}</Text>
               </View>
-
               <View style={styles.clockSubCardHighlight}>
                 <Text style={styles.clockLabelHighlight}>RELÓGIO ATÔMICO (NTP)</Text>
                 <Text style={styles.clockValueHighlight}>{formatClock(currentTime, timeOffset)}</Text>
               </View>
             </View>
 
-            {/* Sync Stats */}
             <View style={styles.statsContainer}>
               <View style={styles.statRow}>
                 <Text style={styles.statLabel}>Drift do Sistema:</Text>
                 <Text style={[
-                  styles.statValue, 
+                  styles.statValue,
                   timeOffset === 0 && !lastSyncTime ? styles.textNeutral : (Math.abs(timeOffset) < 300 ? styles.textSuccess : styles.textWarning)
                 ]}>
-                  {getOffsetText()}
+                  {getOffsetText(timeOffset, lastSyncTime)}
                 </Text>
               </View>
               <View style={styles.statRow}>
@@ -450,9 +295,8 @@ export default function App() {
               </View>
             </View>
 
-            {/* Sync Button */}
-            <TouchableOpacity 
-              style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]} 
+            <TouchableOpacity
+              style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]}
               onPress={() => syncTime(false)}
               disabled={isSyncing}
             >
@@ -468,7 +312,7 @@ export default function App() {
           </View>
         )}
 
-        {/* Relógio do Celular — visível quando sincronia atômica está desativada */}
+        {/* ─── Relógio do Celular (quando NTP desativo) ────────────────── */}
         {!useAtomicSync && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
@@ -481,56 +325,116 @@ export default function App() {
                 <Text style={[styles.indicatorText, styles.textSync]}>ATIVO</Text>
               </View>
             </View>
-
             <View style={styles.clockSubCardHighlight}>
               <Text style={styles.clockLabelHighlight}>HORÁRIO DO SISTEMA</Text>
               <Text style={styles.clockValueHighlight}>{formatClock(currentTime, 0)}</Text>
             </View>
-
             <Text style={styles.clockModeDescription}>
               O bip tocará exatamente na hora cheia exibida no seu celular.
             </Text>
           </View>
         )}
 
-        {/* Configuration Panel */}
+        {/* ─── Configurações ───────────────────────────────────────────── */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View style={styles.row}>
               <Feather name="sliders" size={20} color="#00f2fe" />
               <Text style={styles.cardTitle}>Configurações</Text>
             </View>
+            {isPremium && (
+              <View style={styles.proBadge}>
+                <Ionicons name="star" size={10} color="#fbbf24" />
+                <Text style={styles.proBadgeText}>PRO</Text>
+              </View>
+            )}
           </View>
 
+          {/* Intervalo */}
           <Text style={styles.sectionSubtitle}>INTERVALO DOS ALERTAS</Text>
-          <View style={styles.segmentContainer}>
-            <TouchableOpacity
-              style={[styles.segmentButton, intervalTime === 60 && styles.segmentActive]}
-              onPress={() => !isEnabled && setIntervalTime(60)}
-              activeOpacity={isEnabled ? 1 : 0.7}
-            >
-              <Text style={[styles.segmentText, intervalTime === 60 && styles.segmentTextActive]}>
-                1 Minuto
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.segmentButton, intervalTime === 3600 && styles.segmentActive]}
-              onPress={() => !isEnabled && setIntervalTime(3600)}
-              activeOpacity={isEnabled ? 1 : 0.7}
-            >
-              <Text style={[styles.segmentText, intervalTime === 3600 && styles.segmentTextActive]}>
-                1 Hora
-              </Text>
-            </TouchableOpacity>
+          <View style={styles.intervalGrid}>
+            {INTERVALS.map((interval) => {
+              const isActive = intervalTime === interval.seconds;
+              const isLocked = interval.isPremium && !isPremium;
+              return (
+                <TouchableOpacity
+                  key={interval.seconds}
+                  style={[
+                    styles.intervalButton,
+                    isActive && styles.intervalActive,
+                    isLocked && styles.intervalLocked,
+                  ]}
+                  onPress={() => {
+                    if (isEnabled) return;
+                    if (isLocked) { setShowUpgrade(true); return; }
+                    setIntervalTime(interval.seconds);
+                  }}
+                  activeOpacity={isEnabled ? 1 : 0.7}
+                >
+                  <Text style={[
+                    styles.intervalText,
+                    isActive && styles.intervalTextActive,
+                    isLocked && styles.intervalTextLocked,
+                  ]}>
+                    {interval.label}
+                  </Text>
+                  {isLocked && <Feather name="lock" size={10} color="#64748b" style={styles.intervalLockIcon} />}
+                </TouchableOpacity>
+              );
+            })}
           </View>
 
+          {/* Som */}
+          <Text style={styles.sectionSubtitle}>SOM DO ALERTA</Text>
+          <View style={styles.soundList}>
+            {SOUNDS.map((sound) => {
+              const isActive = selectedSound === sound.id;
+              const isLocked = sound.isPremium && !isPremium;
+              return (
+                <TouchableOpacity
+                  key={sound.id}
+                  style={[styles.soundRow, isActive && styles.soundRowActive]}
+                  onPress={() => {
+                    if (isEnabled) return;
+                    if (isLocked) { setShowUpgrade(true); return; }
+                    setSelectedSound(sound.id);
+                  }}
+                  activeOpacity={isEnabled ? 1 : 0.7}
+                >
+                  <Text style={styles.soundIcon}>{sound.icon}</Text>
+                  <Text style={[styles.soundName, isActive && styles.soundNameActive]}>
+                    {sound.name}
+                  </Text>
+                  {isLocked && (
+                    <View style={styles.soundLockBadge}>
+                      <Feather name="lock" size={10} color="#fbbf24" />
+                      <Text style={styles.soundLockText}>PRO</Text>
+                    </View>
+                  )}
+                  {!isLocked && (
+                    <TouchableOpacity
+                      style={styles.soundPlayButton}
+                      onPress={() => playPreviewSound(sound.id)}
+                    >
+                      <Feather name="play" size={14} color={isActive ? '#00f2fe' : '#64748b'} />
+                    </TouchableOpacity>
+                  )}
+                  {isActive && !isLocked && (
+                    <Feather name="check-circle" size={16} color="#10b981" style={{ marginLeft: 8 }} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Referência de Horário */}
           <Text style={styles.sectionSubtitle}>REFERÊNCIA DE HORÁRIO</Text>
           <View style={styles.controlRow}>
             <View style={{ flex: 1, paddingRight: 8 }}>
               <Text style={styles.statusText}>{useAtomicSync ? 'Hora Atômica (NTP)' : 'Hora do Celular'}</Text>
               <Text style={styles.controlSubText}>
-                {useAtomicSync 
-                  ? 'Compensa drift do relógio via servidores NTP' 
+                {useAtomicSync
+                  ? 'Compensa drift do relógio via servidores NTP'
                   : 'Bipa na hora cheia exibida no celular'}
               </Text>
             </View>
@@ -541,20 +445,83 @@ export default function App() {
               onValueChange={(value) => {
                 if (!isEnabled) {
                   setUseAtomicSync(value);
-                  if (value && !lastSyncTime) {
-                    syncTime(true);
-                  }
+                  if (value && !lastSyncTime) syncTime(true);
                 }
               }}
               value={useAtomicSync}
               style={{ transform: [{ scaleX: 1.3 }, { scaleY: 1.3 }] }}
             />
           </View>
+
+          {/* Horário Silencioso */}
+          <Text style={[styles.sectionSubtitle, { marginTop: 20 }]}>HORÁRIO SILENCIOSO</Text>
+          <PremiumGate isPremium={isPremium} onUpgrade={() => setShowUpgrade(true)}>
+            <View style={styles.controlRow}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.statusText}>Não Perturbe</Text>
+                <Text style={styles.controlSubText}>
+                  {quietHoursEnabled ? getQuietHoursText() : 'Desativado'}
+                </Text>
+              </View>
+              <Switch
+                trackColor={{ false: '#243256', true: '#8b5cf6' }}
+                thumbColor={quietHoursEnabled ? '#ffffff' : '#94a3b8'}
+                ios_backgroundColor="#243256"
+                onValueChange={(value) => {
+                  if (!isEnabled && isPremium) setQuietHoursEnabled(value);
+                }}
+                value={quietHoursEnabled}
+                style={{ transform: [{ scaleX: 1.3 }, { scaleY: 1.3 }] }}
+              />
+            </View>
+            {quietHoursEnabled && isPremium && (
+              <View style={styles.quietHoursConfig}>
+                <View style={styles.hourPickerRow}>
+                  <Text style={styles.hourPickerLabel}>Início:</Text>
+                  <View style={styles.hourPicker}>
+                    <TouchableOpacity
+                      style={styles.hourButton}
+                      onPress={() => !isEnabled && setQuietHoursStart(prev => (prev - 1 + 24) % 24)}
+                    >
+                      <Feather name="minus" size={14} color="#94a3b8" />
+                    </TouchableOpacity>
+                    <Text style={styles.hourValue}>{quietHoursStart.toString().padStart(2, '0')}:00</Text>
+                    <TouchableOpacity
+                      style={styles.hourButton}
+                      onPress={() => !isEnabled && setQuietHoursStart(prev => (prev + 1) % 24)}
+                    >
+                      <Feather name="plus" size={14} color="#94a3b8" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <View style={styles.hourPickerRow}>
+                  <Text style={styles.hourPickerLabel}>Fim:</Text>
+                  <View style={styles.hourPicker}>
+                    <TouchableOpacity
+                      style={styles.hourButton}
+                      onPress={() => !isEnabled && setQuietHoursEnd(prev => (prev - 1 + 24) % 24)}
+                    >
+                      <Feather name="minus" size={14} color="#94a3b8" />
+                    </TouchableOpacity>
+                    <Text style={styles.hourValue}>{quietHoursEnd.toString().padStart(2, '0')}:00</Text>
+                    <TouchableOpacity
+                      style={styles.hourButton}
+                      onPress={() => !isEnabled && setQuietHoursEnd(prev => (prev + 1) % 24)}
+                    >
+                      <Feather name="plus" size={14} color="#94a3b8" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            )}
+          </PremiumGate>
+
+          {/* Toggle Bips */}
           {isEnabled && (
             <Text style={styles.lockedHint}>Desative os bips para alterar as configurações</Text>
           )}
 
-          <View style={styles.controlRow}>
+          <View style={[styles.controlRow, { marginTop: 16 }]}>
             <View style={{ flex: 1, paddingRight: 8 }}>
               <Text style={styles.statusText}>{isEnabled ? 'Bips Ativos' : 'Bips Inativos'}</Text>
               <Text style={styles.controlSubText}>
@@ -572,7 +539,7 @@ export default function App() {
           </View>
         </View>
 
-        {/* Live Countdown / Info Panel */}
+        {/* ─── Status do Sistema ────────────────────────────────────────── */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View style={styles.row}>
@@ -584,33 +551,67 @@ export default function App() {
           {isEnabled ? (
             <View style={styles.countdownContainer}>
               <Text style={styles.countdownLabel}>PRÓXIMO BIP EM</Text>
-              <Text style={styles.countdownValue}>{getCountdownText()}</Text>
+              <Text style={styles.countdownValue}>
+                {getCountdownText(currentTime, effectiveOffset, intervalTime)}
+              </Text>
               <View style={styles.badgeContainer}>
                 <View style={[styles.badge, styles.badgeActive]}>
                   <View style={[styles.miniDot, styles.bgSync]} />
-                  <Text style={styles.badgeText}>{getSyncModeText()} ({Platform.OS === 'ios' ? 'iOS' : 'Android'})</Text>
+                  <Text style={styles.badgeText}>
+                    {getSyncModeText()} ({Platform.OS === 'ios' ? 'iOS' : 'Android'})
+                  </Text>
                 </View>
               </View>
+              {quietHoursEnabled && isPremium && (
+                <View style={[styles.badge, styles.badgeQuiet, { marginTop: 8 }]}>
+                  <Feather name="moon" size={10} color="#8b5cf6" />
+                  <Text style={styles.badgeQuietText}>Silêncio {getQuietHoursText()}</Text>
+                </View>
+              )}
             </View>
           ) : (
             <View style={styles.inactiveContainer}>
               <Feather name="alert-circle" size={32} color="#94a3b8" />
               <Text style={styles.inactiveText}>
-                Ative o bip horário no painel de configurações para iniciar o cronômetro compensado.
+                Ative o bip horário no painel de configurações para iniciar o cronômetro.
               </Text>
             </View>
           )}
         </View>
 
+        {/* ─── Banner Premium (para free) ──────────────────────────────── */}
+        {!isPremium && (
+          <TouchableOpacity style={styles.upgradeBanner} onPress={() => setShowUpgrade(true)}>
+            <View style={styles.upgradeBannerContent}>
+              <Ionicons name="star" size={20} color="#fbbf24" />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.upgradeBannerTitle}>Upgrade para Premium</Text>
+                <Text style={styles.upgradeBannerDesc}>Sons exclusivos, intervalos custom e mais</Text>
+              </View>
+              <Feather name="chevron-right" size={20} color="#fbbf24" />
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* ─── Footer ──────────────────────────────────────────────────── */}
         <Text style={styles.footerText}>
-          Desenvolvido com precisão atômica por Marcio Roya{'\n'}Versão 1.0.1 (Atualizado)
+          Desenvolvido com precisão atômica por Marcio Roya{'\n'}Versão 2.0.0 {isPremium ? '(Premium)' : '(Free)'}
         </Text>
 
       </ScrollView>
+
+      {/* ─── Modal de Upgrade ────────────────────────────────────────── */}
+      <UpgradeScreen
+        visible={showUpgrade}
+        onClose={() => setShowUpgrade(false)}
+        onPurchase={unlockPremium}
+        onRestore={restorePurchase}
+      />
     </SafeAreaView>
   );
 }
 
+// ─── Estilos ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -621,6 +622,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 40,
   },
+
+  // Header
   header: {
     alignItems: 'center',
     marginTop: 20,
@@ -665,6 +668,8 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontWeight: '500',
   },
+
+  // Cards
   card: {
     backgroundColor: '#131c31',
     borderRadius: 24,
@@ -698,6 +703,8 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
     marginLeft: 8,
   },
+
+  // Status indicators
   statusIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -720,23 +727,20 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     marginRight: 6,
   },
-  bgSync: {
-    backgroundColor: '#10b981',
-  },
-  bgUnsync: {
-    backgroundColor: '#f59e0b',
-  },
+  bgSync: { backgroundColor: '#10b981' },
+  bgUnsync: { backgroundColor: '#f59e0b' },
   indicatorText: {
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-  textSync: {
-    color: '#10b981',
-  },
-  textUnsync: {
-    color: '#f59e0b',
-  },
+  textSync: { color: '#10b981' },
+  textUnsync: { color: '#f59e0b' },
+  textNeutral: { color: '#94a3b8' },
+  textSuccess: { color: '#10b981' },
+  textWarning: { color: '#fbbf24' },
+
+  // Clocks
   clocksContainer: {
     flexDirection: 'column',
     gap: 12,
@@ -791,6 +795,16 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 8,
   },
+  clockModeDescription: {
+    fontSize: 12,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 16,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+
+  // Stats
   statsContainer: {
     backgroundColor: '#090d16',
     borderRadius: 14,
@@ -815,15 +829,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#f8fafc',
   },
-  textSuccess: {
-    color: '#10b981',
-  },
-  textWarning: {
-    color: '#fbbf24',
-  },
-  textNeutral: {
-    color: '#94a3b8',
-  },
+
+  // Sync button
   syncButton: {
     backgroundColor: '#3b82f6',
     flexDirection: 'row',
@@ -850,6 +857,8 @@ const styles = StyleSheet.create({
   buttonIcon: {
     marginRight: 8,
   },
+
+  // Section
   sectionSubtitle: {
     fontSize: 11,
     fontWeight: '700',
@@ -857,36 +866,122 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     marginBottom: 10,
   },
-  segmentContainer: {
+
+  // Interval grid
+  intervalGrid: {
     flexDirection: 'row',
-    backgroundColor: '#090d16',
-    borderRadius: 14,
-    padding: 4,
+    flexWrap: 'wrap',
+    gap: 8,
     marginBottom: 20,
+  },
+  intervalButton: {
+    width: '31%',
+    backgroundColor: '#090d16',
     borderWidth: 1,
     borderColor: '#1e293b',
-  },
-  segmentButton: {
-    flex: 1,
+    borderRadius: 12,
     paddingVertical: 12,
     alignItems: 'center',
-    borderRadius: 10,
+    justifyContent: 'center',
   },
-  segmentActive: {
+  intervalActive: {
     backgroundColor: '#3b82f6',
+    borderColor: '#3b82f6',
     shadowColor: '#3b82f6',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
   },
-  segmentText: {
+  intervalLocked: {
+    borderColor: '#1e293b',
+    opacity: 0.6,
+  },
+  intervalText: {
     color: '#64748b',
     fontWeight: '600',
-    fontSize: 14,
+    fontSize: 13,
   },
-  segmentTextActive: {
+  intervalTextActive: {
     color: '#ffffff',
   },
+  intervalTextLocked: {
+    color: '#475569',
+  },
+  intervalLockIcon: {
+    marginTop: 2,
+  },
+
+  // Sound list
+  soundList: {
+    gap: 6,
+    marginBottom: 20,
+  },
+  soundRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  soundRowActive: {
+    borderColor: 'rgba(0, 242, 254, 0.3)',
+    backgroundColor: 'rgba(0, 242, 254, 0.04)',
+  },
+  soundIcon: {
+    fontSize: 18,
+    marginRight: 12,
+  },
+  soundName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+  soundNameActive: {
+    color: '#f8fafc',
+  },
+  soundLockBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    gap: 4,
+  },
+  soundLockText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#fbbf24',
+    letterSpacing: 0.5,
+  },
+  soundPlayButton: {
+    padding: 6,
+  },
+
+  // Pro badge
+  proBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.12)',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.2)',
+  },
+  proBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#fbbf24',
+    letterSpacing: 0.5,
+  },
+
+  // Controls
   controlRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -908,6 +1003,58 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginTop: 2,
   },
+  lockedHint: {
+    fontSize: 11,
+    color: '#f59e0b',
+    textAlign: 'center',
+    marginTop: 12,
+    fontWeight: '500',
+    fontStyle: 'italic',
+  },
+
+  // Quiet hours
+  quietHoursConfig: {
+    marginTop: 12,
+    backgroundColor: '#090d16',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    gap: 10,
+  },
+  hourPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  hourPickerLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#94a3b8',
+    width: 50,
+  },
+  hourPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  hourButton: {
+    backgroundColor: '#131c31',
+    borderWidth: 1,
+    borderColor: '#243256',
+    borderRadius: 8,
+    padding: 8,
+  },
+  hourValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#8b5cf6',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    minWidth: 50,
+    textAlign: 'center',
+  },
+
+  // Countdown
   countdownContainer: {
     alignItems: 'center',
     paddingVertical: 10,
@@ -950,6 +1097,18 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#10b981',
   },
+  badgeQuiet: {
+    backgroundColor: 'rgba(139, 92, 246, 0.08)',
+    borderColor: 'rgba(139, 92, 246, 0.15)',
+    gap: 6,
+  },
+  badgeQuietText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#8b5cf6',
+  },
+
+  // Inactive
   inactiveContainer: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -963,6 +1122,33 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     paddingHorizontal: 10,
   },
+
+  // Upgrade banner
+  upgradeBanner: {
+    width: '100%',
+    backgroundColor: 'rgba(251, 191, 36, 0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.15)',
+    borderRadius: 18,
+    marginBottom: 20,
+  },
+  upgradeBannerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+  },
+  upgradeBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fbbf24',
+  },
+  upgradeBannerDesc: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+
+  // Footer
   footerText: {
     fontSize: 11,
     color: '#475569',
@@ -970,21 +1156,5 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 20,
     fontWeight: '500',
-  },
-  clockModeDescription: {
-    fontSize: 12,
-    color: '#64748b',
-    textAlign: 'center',
-    marginTop: 16,
-    lineHeight: 18,
-    fontWeight: '500',
-  },
-  lockedHint: {
-    fontSize: 11,
-    color: '#f59e0b',
-    textAlign: 'center',
-    marginTop: 12,
-    fontWeight: '500',
-    fontStyle: 'italic',
   },
 });
