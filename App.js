@@ -32,6 +32,10 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [useAtomicSync, setUseAtomicSync] = useState(false); // false = hora do celular (padrão)
+
+  // Offset efetivo: 0 quando usa hora do celular, timeOffset quando usa hora atômica
+  const effectiveOffset = useAtomicSync ? timeOffset : 0;
 
   const playSound = async () => {
     try {
@@ -213,11 +217,11 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Sync on startup — aguarda syncTime para usar o offset real (evita stale closure)
+  // Inicialização — configura canal e verifica status das notificações
   useEffect(() => {
     const init = async () => {
-      const syncedOffset = await syncTime(true);
-      const currentOffset = syncedOffset ?? 0;
+      // Sincroniza em background para ter o offset disponível caso o usuário ative
+      await syncTime(true);
 
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('hourly-beep', {
@@ -231,13 +235,13 @@ export default function App() {
       const active = scheduled.length > 0;
       setIsEnabled(active);
 
-      // Auto-reagendamento ao abrir o app com offset atualizado
+      // Auto-reagendamento ao abrir o app (usa offset=0 por padrão = hora do celular)
       if (active && Platform.OS === 'android' && scheduled.length < 15) {
         await Notifications.cancelAllScheduledNotificationsAsync();
         if (intervalTime === 60) {
-          await scheduleAndroidMinuteBips(currentOffset);
+          await scheduleAndroidMinuteBips(0);
         } else {
-          await scheduleAndroidHourlyBips(currentOffset);
+          await scheduleAndroidHourlyBips(0);
         }
       }
     };
@@ -256,15 +260,15 @@ export default function App() {
         if (scheduled.length < threshold) {
           await Notifications.cancelAllScheduledNotificationsAsync();
           if (intervalTime === 60) {
-            await scheduleAndroidMinuteBips(timeOffset);
+            await scheduleAndroidMinuteBips(effectiveOffset);
           } else {
-            await scheduleAndroidHourlyBips(timeOffset);
+            await scheduleAndroidHourlyBips(effectiveOffset);
           }
         }
       }
     );
     return () => subscription.remove();
-  }, [isEnabled, intervalTime, timeOffset]);
+  }, [isEnabled, intervalTime, effectiveOffset]);
 
   const toggleSwitch = async () => {
     try {
@@ -293,8 +297,13 @@ export default function App() {
         // Removido o preview de som para não bipar na hora da ativação (ex: 22:12), apenas na hora cheia
         // await playSound();
 
-        // Refresh time synchronization just before scheduling to guarantee perfect accuracy
-        await syncTime(true);
+        // Se sincronia atômica ativa, atualiza offset antes de agendar
+        if (useAtomicSync) {
+          await syncTime(true);
+        }
+
+        // Offset a ser usado no agendamento
+        const schedulingOffset = useAtomicSync ? timeOffset : 0;
 
         // Schedule notifications
         if (Platform.OS === 'ios') {
@@ -315,11 +324,11 @@ export default function App() {
             trigger,
           });
         } else {
-          // Android: Uses time-offset compensated date-triggers
+          // Android: date-triggers (compensados ou não, conforme configuração)
           if (intervalTime === 3600) {
-            await scheduleAndroidHourlyBips(timeOffset);
+            await scheduleAndroidHourlyBips(schedulingOffset);
           } else {
-            await scheduleAndroidMinuteBips(timeOffset);
+            await scheduleAndroidMinuteBips(schedulingOffset);
           }
         }
 
@@ -348,15 +357,15 @@ export default function App() {
   };
 
   const getCountdownText = () => {
-    const trueNow = currentTime.getTime() + timeOffset;
+    const adjustedNow = currentTime.getTime() + effectiveOffset;
     if (intervalTime === 60) {
-      const msLeft = 60000 - (trueNow % 60000);
+      const msLeft = 60000 - (adjustedNow % 60000);
       const seconds = Math.floor(msLeft / 1000);
       const tenths = Math.floor((msLeft % 1000) / 100);
       return `${seconds.toString().padStart(2, '0')}.${tenths}s`;
     } else {
-      const trueDate = new Date(trueNow);
-      const msPastHour = trueDate.getMinutes() * 60000 + trueDate.getSeconds() * 1000 + trueDate.getMilliseconds();
+      const adjustedDate = new Date(adjustedNow);
+      const msPastHour = adjustedDate.getMinutes() * 60000 + adjustedDate.getSeconds() * 1000 + adjustedDate.getMilliseconds();
       const msLeft = 3600000 - msPastHour;
       const minutes = Math.floor(msLeft / 60000);
       const seconds = Math.floor((msLeft % 60000) / 1000);
@@ -371,6 +380,13 @@ export default function App() {
     return `${timeOffset > 0 ? '+' : ''}${seconds}s (${Math.abs(timeOffset)}ms)`;
   };
 
+  const getSyncModeText = () => {
+    if (useAtomicSync) {
+      return lastSyncTime ? 'NTP Compensado' : 'NTP Pendente';
+    }
+    return 'Relógio do Celular';
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
@@ -383,72 +399,99 @@ export default function App() {
             {isEnabled && <View style={styles.pulseDot} />}
           </View>
           <Text style={styles.title}>Bip Horário</Text>
-          <Text style={styles.subtitle}>Sincronização Atômica & Precisão Absoluta</Text>
+          <Text style={styles.subtitle}>{useAtomicSync ? 'Sincronização Atômica Ativa' : 'Sincronizado com Relógio do Celular'}</Text>
         </View>
 
-        {/* Live Synchronizer Panel */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <View style={styles.row}>
-              <Feather name="cpu" size={20} color="#00f2fe" />
-              <Text style={styles.cardTitle}>Sincronizador Temporal</Text>
+        {/* Live Synchronizer Panel — visível apenas quando sincronia atômica está ativa */}
+        {useAtomicSync && (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.row}>
+                <Feather name="cpu" size={20} color="#00f2fe" />
+                <Text style={styles.cardTitle}>Sincronizador Temporal</Text>
+              </View>
+              <View style={[styles.statusIndicator, lastSyncTime ? styles.statusSync : styles.statusUnsync]}>
+                <View style={[styles.miniDot, lastSyncTime ? styles.bgSync : styles.bgUnsync]} />
+                <Text style={[styles.indicatorText, lastSyncTime ? styles.textSync : styles.textUnsync]}>
+                  {lastSyncTime ? 'COMPENSADO' : 'PENDENTE'}
+                </Text>
+              </View>
             </View>
-            <View style={[styles.statusIndicator, lastSyncTime ? styles.statusSync : styles.statusUnsync]}>
-              <View style={[styles.miniDot, lastSyncTime ? styles.bgSync : styles.bgUnsync]} />
-              <Text style={[styles.indicatorText, lastSyncTime ? styles.textSync : styles.textUnsync]}>
-                {lastSyncTime ? 'COMPENSADO' : 'PENDENTE'}
-              </Text>
-            </View>
-          </View>
 
-          {/* Double Clocks */}
-          <View style={styles.clocksContainer}>
-            <View style={styles.clockSubCard}>
-              <Text style={styles.clockLabel}>CELULAR (SISTEMA)</Text>
-              <Text style={styles.clockValue}>{formatClock(currentTime, 0)}</Text>
+            {/* Double Clocks */}
+            <View style={styles.clocksContainer}>
+              <View style={styles.clockSubCard}>
+                <Text style={styles.clockLabel}>CELULAR (SISTEMA)</Text>
+                <Text style={styles.clockValue}>{formatClock(currentTime, 0)}</Text>
+              </View>
+
+              <View style={styles.clockSubCardHighlight}>
+                <Text style={styles.clockLabelHighlight}>RELÓGIO ATÔMICO (NTP)</Text>
+                <Text style={styles.clockValueHighlight}>{formatClock(currentTime, timeOffset)}</Text>
+              </View>
+            </View>
+
+            {/* Sync Stats */}
+            <View style={styles.statsContainer}>
+              <View style={styles.statRow}>
+                <Text style={styles.statLabel}>Drift do Sistema:</Text>
+                <Text style={[
+                  styles.statValue, 
+                  timeOffset === 0 && !lastSyncTime ? styles.textNeutral : (Math.abs(timeOffset) < 300 ? styles.textSuccess : styles.textWarning)
+                ]}>
+                  {getOffsetText()}
+                </Text>
+              </View>
+              <View style={styles.statRow}>
+                <Text style={styles.statLabel}>Última Calibração:</Text>
+                <Text style={styles.statValue}>
+                  {lastSyncTime ? lastSyncTime.toLocaleTimeString() : 'Nunca'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Sync Button */}
+            <TouchableOpacity 
+              style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]} 
+              onPress={() => syncTime(false)}
+              disabled={isSyncing}
+            >
+              {isSyncing ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <>
+                  <Feather name="refresh-cw" size={16} color="#ffffff" style={styles.buttonIcon} />
+                  <Text style={styles.syncButtonText}>Calibrar com Hora Atômica</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Relógio do Celular — visível quando sincronia atômica está desativada */}
+        {!useAtomicSync && (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.row}>
+                <Feather name="smartphone" size={20} color="#00f2fe" />
+                <Text style={styles.cardTitle}>Relógio do Celular</Text>
+              </View>
+              <View style={[styles.statusIndicator, styles.statusSync]}>
+                <View style={[styles.miniDot, styles.bgSync]} />
+                <Text style={[styles.indicatorText, styles.textSync]}>ATIVO</Text>
+              </View>
             </View>
 
             <View style={styles.clockSubCardHighlight}>
-              <Text style={styles.clockLabelHighlight}>RELÓGIO ATÔMICO (NTP)</Text>
-              <Text style={styles.clockValueHighlight}>{formatClock(currentTime, timeOffset)}</Text>
+              <Text style={styles.clockLabelHighlight}>HORÁRIO DO SISTEMA</Text>
+              <Text style={styles.clockValueHighlight}>{formatClock(currentTime, 0)}</Text>
             </View>
-          </View>
 
-          {/* Sync Stats */}
-          <View style={styles.statsContainer}>
-            <View style={styles.statRow}>
-              <Text style={styles.statLabel}>Drift do Sistema:</Text>
-              <Text style={[
-                styles.statValue, 
-                timeOffset === 0 && !lastSyncTime ? styles.textNeutral : (Math.abs(timeOffset) < 300 ? styles.textSuccess : styles.textWarning)
-              ]}>
-                {getOffsetText()}
-              </Text>
-            </View>
-            <View style={styles.statRow}>
-              <Text style={styles.statLabel}>Última Calibração:</Text>
-              <Text style={styles.statValue}>
-                {lastSyncTime ? lastSyncTime.toLocaleTimeString() : 'Nunca'}
-              </Text>
-            </View>
+            <Text style={styles.clockModeDescription}>
+              O bip tocará exatamente na hora cheia exibida no seu celular.
+            </Text>
           </View>
-
-          {/* Sync Button */}
-          <TouchableOpacity 
-            style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]} 
-            onPress={() => syncTime(false)}
-            disabled={isSyncing}
-          >
-            {isSyncing ? (
-              <ActivityIndicator size="small" color="#ffffff" />
-            ) : (
-              <>
-                <Feather name="refresh-cw" size={16} color="#ffffff" style={styles.buttonIcon} />
-                <Text style={styles.syncButtonText}>Calibrar com Hora Atômica</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
+        )}
 
         {/* Configuration Panel */}
         <View style={styles.card}>
@@ -480,6 +523,36 @@ export default function App() {
               </Text>
             </TouchableOpacity>
           </View>
+
+          <Text style={styles.sectionSubtitle}>REFERÊNCIA DE HORÁRIO</Text>
+          <View style={styles.controlRow}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.statusText}>{useAtomicSync ? 'Hora Atômica (NTP)' : 'Hora do Celular'}</Text>
+              <Text style={styles.controlSubText}>
+                {useAtomicSync 
+                  ? 'Compensa drift do relógio via servidores NTP' 
+                  : 'Bipa na hora cheia exibida no celular'}
+              </Text>
+            </View>
+            <Switch
+              trackColor={{ false: '#243256', true: '#3b82f6' }}
+              thumbColor={useAtomicSync ? '#ffffff' : '#94a3b8'}
+              ios_backgroundColor="#243256"
+              onValueChange={(value) => {
+                if (!isEnabled) {
+                  setUseAtomicSync(value);
+                  if (value && !lastSyncTime) {
+                    syncTime(true);
+                  }
+                }
+              }}
+              value={useAtomicSync}
+              style={{ transform: [{ scaleX: 1.3 }, { scaleY: 1.3 }] }}
+            />
+          </View>
+          {isEnabled && (
+            <Text style={styles.lockedHint}>Desative os bips para alterar as configurações</Text>
+          )}
 
           <View style={styles.controlRow}>
             <View style={{ flex: 1, paddingRight: 8 }}>
@@ -515,7 +588,7 @@ export default function App() {
               <View style={styles.badgeContainer}>
                 <View style={[styles.badge, styles.badgeActive]}>
                   <View style={[styles.miniDot, styles.bgSync]} />
-                  <Text style={styles.badgeText}>Sincronia Compensada ({Platform.OS === 'ios' ? 'Nativa iOS' : 'NTP Android'})</Text>
+                  <Text style={styles.badgeText}>{getSyncModeText()} ({Platform.OS === 'ios' ? 'iOS' : 'Android'})</Text>
                 </View>
               </View>
             </View>
@@ -897,5 +970,21 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 20,
     fontWeight: '500',
+  },
+  clockModeDescription: {
+    fontSize: 12,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 16,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  lockedHint: {
+    fontSize: 11,
+    color: '#f59e0b',
+    textAlign: 'center',
+    marginTop: 12,
+    fontWeight: '500',
+    fontStyle: 'italic',
   },
 });
