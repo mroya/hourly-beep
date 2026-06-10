@@ -1,5 +1,10 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import * as TaskManager from 'expo-task-manager';
+import * as BackgroundFetch from 'expo-background-fetch';
+import { loadSettings } from './premium';
+import { getSoundById } from './audio';
+import { performTimeSync } from './timeSync';
 
 /**
  * Intervalos disponíveis no app.
@@ -152,3 +157,48 @@ export async function getScheduledCount() {
   const scheduled = await Notifications.getAllScheduledNotificationsAsync();
   return scheduled.length;
 }
+
+// ─── Definição da Tarefa em Segundo Plano (Auto-Cura) ───────────────────────────
+export const BACKGROUND_BIP_HEAL_TASK = 'BACKGROUND_BIP_HEAL_TASK';
+
+TaskManager.defineTask(BACKGROUND_BIP_HEAL_TASK, async () => {
+  try {
+    const settings = await loadSettings();
+    if (!settings || !settings.isEnabled) {
+      console.log('[Background Task] Bips estão desativados ou configurações indisponíveis.');
+      return BackgroundFetch.BackgroundFetchResult.NoData;
+    }
+
+    const count = await getScheduledCount();
+    const threshold = settings.intervalTime <= 60 ? 30 : 15;
+
+    if (count < threshold) {
+      console.log(`[Background Task] Auto-cura ativada. Agendamentos baixos (${count}). Reagendando...`);
+      await cancelAllNotifications();
+
+      let schedulingOffset = 0;
+      if (settings.useAtomicSync) {
+        const syncedOffset = await performTimeSync();
+        schedulingOffset = syncedOffset?.success ? syncedOffset.offset : 0;
+      }
+
+      await scheduleNotifications({
+        intervalSeconds: settings.intervalTime,
+        offset: schedulingOffset,
+        soundFile: getSoundById(settings.selectedSound).notifSound,
+        quietHours: settings.quietHoursEnabled
+          ? { enabled: true, start: settings.quietHoursStart, end: settings.quietHoursEnd }
+          : null,
+      });
+
+      console.log('[Background Task] Auto-cura executada com sucesso.');
+      return BackgroundFetch.BackgroundFetchResult.NewData;
+    }
+
+    console.log(`[Background Task] Lote de agendamento íntegro (${count} agendamentos).`);
+    return BackgroundFetch.BackgroundFetchResult.NoData;
+  } catch (error) {
+    console.error('[Background Task] Falha na execução da auto-cura:', error);
+    return BackgroundFetch.BackgroundFetchResult.Failed;
+  }
+});

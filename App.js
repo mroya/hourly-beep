@@ -17,12 +17,14 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 
 // Services
 import { performTimeSync } from './services/timeSync';
+import * as BackgroundFetch from 'expo-background-fetch';
 import {
   INTERVALS,
   setupNotificationChannel,
   scheduleNotifications,
   cancelAllNotifications,
   getScheduledCount,
+  BACKGROUND_BIP_HEAL_TASK,
 } from './services/notifications';
 import { SOUNDS, playPreviewSound, getSoundById } from './services/audio';
 import { usePremium, loadSettings, saveSettings } from './services/premium';
@@ -100,19 +102,58 @@ export default function App() {
     return success ? offset : null;
   };
 
-  // ─── Persistência de Configurações ────────────────────────────────────────────
+  // ─── Persistência e Inicialização de Configurações ───────────────────────────
   useEffect(() => {
     (async () => {
       const saved = await loadSettings();
+      let loadedInterval = intervalTime;
+      let loadedAtomicSync = useAtomicSync;
+      let loadedSound = selectedSound;
+      let loadedQuietEnabled = quietHoursEnabled;
+      let loadedQuietStart = quietHoursStart;
+      let loadedQuietEnd = quietHoursEnd;
+      let loadedEnabled = isEnabled;
+
       if (saved) {
-        if (saved.intervalTime) setIntervalTime(saved.intervalTime);
-        if (saved.useAtomicSync !== undefined) setUseAtomicSync(saved.useAtomicSync);
-        if (saved.selectedSound) setSelectedSound(saved.selectedSound);
-        if (saved.quietHoursEnabled !== undefined) setQuietHoursEnabled(saved.quietHoursEnabled);
-        if (saved.quietHoursStart !== undefined) setQuietHoursStart(saved.quietHoursStart);
-        if (saved.quietHoursEnd !== undefined) setQuietHoursEnd(saved.quietHoursEnd);
+        if (saved.intervalTime) { setIntervalTime(saved.intervalTime); loadedInterval = saved.intervalTime; }
+        if (saved.useAtomicSync !== undefined) { setUseAtomicSync(saved.useAtomicSync); loadedAtomicSync = saved.useAtomicSync; }
+        if (saved.selectedSound) { setSelectedSound(saved.selectedSound); loadedSound = saved.selectedSound; }
+        if (saved.quietHoursEnabled !== undefined) { setQuietHoursEnabled(saved.quietHoursEnabled); loadedQuietEnabled = saved.quietHoursEnabled; }
+        if (saved.quietHoursStart !== undefined) { setQuietHoursStart(saved.quietHoursStart); loadedQuietStart = saved.quietHoursStart; }
+        if (saved.quietHoursEnd !== undefined) { setQuietHoursEnd(saved.quietHoursEnd); loadedQuietEnd = saved.quietHoursEnd; }
+        if (saved.isEnabled !== undefined) { setIsEnabled(saved.isEnabled); loadedEnabled = saved.isEnabled; }
       }
       settingsLoaded.current = true;
+
+      // Executa inicialização
+      await syncTime(true);
+      await setupNotificationChannel();
+
+      const count = await getScheduledCount();
+
+      if (loadedEnabled) {
+        setIsEnabled(true);
+        const threshold = loadedInterval <= 60 ? 30 : 15;
+        if (count < threshold) {
+          await cancelAllNotifications();
+          let schedulingOffset = 0;
+          if (loadedAtomicSync) {
+            const syncedOffset = await performTimeSync();
+            schedulingOffset = syncedOffset?.success ? syncedOffset.offset : 0;
+          }
+          await scheduleNotifications({
+            intervalSeconds: loadedInterval,
+            offset: schedulingOffset,
+            soundFile: getSoundById(loadedSound).notifSound,
+            quietHours: loadedQuietEnabled ? { enabled: true, start: loadedQuietStart, end: loadedQuietEnd } : null,
+          });
+        }
+      } else {
+        setIsEnabled(false);
+        if (count > 0) {
+          await cancelAllNotifications();
+        }
+      }
     })();
   }, []);
 
@@ -125,37 +166,36 @@ export default function App() {
       quietHoursEnabled,
       quietHoursStart,
       quietHoursEnd,
+      isEnabled,
     });
-  }, [intervalTime, useAtomicSync, selectedSound, quietHoursEnabled, quietHoursStart, quietHoursEnd]);
+  }, [intervalTime, useAtomicSync, selectedSound, quietHoursEnabled, quietHoursStart, quietHoursEnd, isEnabled]);
+
+  // ─── Registro do Background Fetch ─────────────────────────────────────────────
+  useEffect(() => {
+    const registerBackgroundFetch = async () => {
+      try {
+        const isRegistered = await BackgroundFetch.isTaskRegisteredAsync(BACKGROUND_BIP_HEAL_TASK);
+        if (!isRegistered) {
+          await BackgroundFetch.registerTaskAsync(BACKGROUND_BIP_HEAL_TASK, {
+            minimumInterval: 15 * 60, // 15 minutos (mínimo permitido por iOS/Android)
+            stopOnTerminate: false,    // Continuar executando se o app for fechado
+            startOnBoot: true,        // Iniciar no boot do dispositivo
+          });
+          console.log('[App] Background Fetch registrado com sucesso!');
+        } else {
+          console.log('[App] Background Fetch já estava registrado.');
+        }
+      } catch (err) {
+        console.error('[App] Erro ao registrar Background Fetch:', err);
+      }
+    };
+    registerBackgroundFetch();
+  }, []);
 
   // ─── Relógio em tempo real ────────────────────────────────────────────────────
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 100);
     return () => clearInterval(timer);
-  }, []);
-
-  // ─── Inicialização ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const init = async () => {
-      await syncTime(true);
-      await setupNotificationChannel();
-
-      const count = await getScheduledCount();
-      const active = count > 0;
-      setIsEnabled(active);
-
-      // Auto-reagendamento se poucas notificações restam
-      if (active && Platform.OS === 'android' && count < 15) {
-        await cancelAllNotifications();
-        await scheduleNotifications({
-          intervalSeconds: intervalTime,
-          offset: 0, // Padrão: hora do celular
-          soundFile: getSoundById(selectedSound).notifSound,
-          quietHours: quietHoursEnabled ? { enabled: true, start: quietHoursStart, end: quietHoursEnd } : null,
-        });
-      }
-    };
-    init();
   }, []);
 
   // ─── Re-agendamento em background ────────────────────────────────────────────
