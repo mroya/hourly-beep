@@ -5,6 +5,7 @@ import * as BackgroundFetch from 'expo-background-fetch';
 import { loadSettings } from './premium';
 import { getSoundById } from './audio';
 import { performTimeSync } from './timeSync';
+import { getVibrationById } from './vibration';
 
 /**
  * Intervalos disponíveis no app.
@@ -21,12 +22,15 @@ export const INTERVALS = [
 /**
  * Configura o canal de notificação no Android.
  */
-export async function setupNotificationChannel() {
+export async function setupNotificationChannel(soundFile = 'beep.mp3', vibrationPattern = null) {
   if (Platform.OS === 'android') {
+    const hasVibration = vibrationPattern && vibrationPattern.length > 0;
     await Notifications.setNotificationChannelAsync('hourly-beep', {
       name: 'Hourly Beep',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: 'beep.mp3',
+      sound: soundFile,
+      enableVibrate: !!hasVibration,
+      vibrationPattern: hasVibration ? vibrationPattern : undefined,
     });
   }
 }
@@ -67,11 +71,15 @@ export async function scheduleNotifications({
   intervalSeconds,
   offset = 0,
   soundFile = 'beep.mp3',
+  vibrationPattern = null,
   quietHours = null,
 }) {
   const intervalMs = intervalSeconds * 1000;
   const now = Date.now();
   const adjustedNow = now + offset;
+
+  // Garante que o canal está configurado com o som e vibração corretos no Android
+  await setupNotificationChannel(soundFile, vibrationPattern);
 
   // iOS pode usar calendar trigger para intervalos padrão (sem quiet hours)
   const canUseCalendarTrigger =
@@ -186,6 +194,7 @@ TaskManager.defineTask(BACKGROUND_BIP_HEAL_TASK, async () => {
         intervalSeconds: settings.intervalTime,
         offset: schedulingOffset,
         soundFile: getSoundById(settings.selectedSound).notifSound,
+        vibrationPattern: getVibrationById(settings.selectedVibration || 'short').pattern,
         quietHours: settings.quietHoursEnabled
           ? { enabled: true, start: settings.quietHoursStart, end: settings.quietHoursEnd }
           : null,

@@ -14,6 +14,7 @@ import {
 import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { Feather, Ionicons } from '@expo/vector-icons';
+import Svg, { Circle } from 'react-native-svg';
 
 // Services
 import { performTimeSync } from './services/timeSync';
@@ -29,6 +30,7 @@ import {
 } from './services/notifications';
 import { SOUNDS, playPreviewSound, getSoundById } from './services/audio';
 import { usePremium, loadSettings, saveSettings } from './services/premium';
+import { VIBRATION_PATTERNS, playVibrationPreview, triggerHapticFeedback, getVibrationById } from './services/vibration';
 
 // Components
 import PremiumGate from './components/PremiumGate';
@@ -67,6 +69,7 @@ export default function App() {
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(false);
   const [quietHoursStart, setQuietHoursStart] = useState(22);
   const [quietHoursEnd, setQuietHoursEnd] = useState(7);
+  const [selectedVibration, setSelectedVibration] = useState('short');
 
   // ─── Valores Derivados ────────────────────────────────────────────────────────
   const effectiveOffset = useAtomicSync ? timeOffset : 0;
@@ -114,6 +117,7 @@ export default function App() {
       let loadedQuietStart = quietHoursStart;
       let loadedQuietEnd = quietHoursEnd;
       let loadedEnabled = isEnabled;
+      let loadedVibration = selectedVibration;
 
       if (saved) {
         if (saved.intervalTime) { setIntervalTime(saved.intervalTime); loadedInterval = saved.intervalTime; }
@@ -123,12 +127,13 @@ export default function App() {
         if (saved.quietHoursStart !== undefined) { setQuietHoursStart(saved.quietHoursStart); loadedQuietStart = saved.quietHoursStart; }
         if (saved.quietHoursEnd !== undefined) { setQuietHoursEnd(saved.quietHoursEnd); loadedQuietEnd = saved.quietHoursEnd; }
         if (saved.isEnabled !== undefined) { setIsEnabled(saved.isEnabled); loadedEnabled = saved.isEnabled; }
+        if (saved.selectedVibration) { setSelectedVibration(saved.selectedVibration); loadedVibration = saved.selectedVibration; }
       }
       settingsLoaded.current = true;
 
       // Executa inicialização
       await syncTime(true);
-      await setupNotificationChannel();
+      await setupNotificationChannel(getSoundById(loadedSound).notifSound, getVibrationById(loadedVibration).pattern);
 
       const count = await getScheduledCount();
 
@@ -146,6 +151,7 @@ export default function App() {
             intervalSeconds: loadedInterval,
             offset: schedulingOffset,
             soundFile: getSoundById(loadedSound).notifSound,
+            vibrationPattern: getVibrationById(loadedVibration).pattern,
             quietHours: loadedQuietEnabled ? { enabled: true, start: loadedQuietStart, end: loadedQuietEnd } : null,
           });
         }
@@ -168,8 +174,9 @@ export default function App() {
       quietHoursStart,
       quietHoursEnd,
       isEnabled,
+      selectedVibration,
     });
-  }, [intervalTime, useAtomicSync, selectedSound, quietHoursEnabled, quietHoursStart, quietHoursEnd, isEnabled]);
+  }, [intervalTime, useAtomicSync, selectedSound, quietHoursEnabled, quietHoursStart, quietHoursEnd, isEnabled, selectedVibration]);
 
   // ─── Registro do Background Fetch ─────────────────────────────────────────────
   useEffect(() => {
@@ -221,6 +228,7 @@ export default function App() {
 
   // ─── Toggle Bips ──────────────────────────────────────────────────────────────
   const toggleSwitch = async () => {
+    triggerHapticFeedback();
     try {
       if (isEnabled) {
         await cancelAllNotifications();
@@ -251,6 +259,7 @@ export default function App() {
           intervalSeconds: intervalTime,
           offset: schedulingOffset,
           soundFile: getSoundById(selectedSound).notifSound,
+          vibrationPattern: getVibrationById(selectedVibration).pattern,
           quietHours: quietHoursEnabled ? { enabled: true, start: quietHoursStart, end: quietHoursEnd } : null,
         });
 
@@ -338,7 +347,10 @@ export default function App() {
 
             <TouchableOpacity
               style={[styles.syncButton, isSyncing && styles.syncButtonDisabled]}
-              onPress={() => syncTime(false)}
+              onPress={() => {
+                triggerHapticFeedback();
+                syncTime(false);
+              }}
               disabled={isSyncing}
             >
               {isSyncing ? (
@@ -406,6 +418,7 @@ export default function App() {
                     isLocked && styles.intervalLocked,
                   ]}
                   onPress={() => {
+                    triggerHapticFeedback();
                     if (isEnabled) return;
                     if (isLocked) { setShowUpgrade(true); return; }
                     setIntervalTime(interval.seconds);
@@ -436,6 +449,7 @@ export default function App() {
                   key={sound.id}
                   style={[styles.soundRow, isActive && styles.soundRowActive]}
                   onPress={() => {
+                    triggerHapticFeedback();
                     if (isEnabled) return;
                     if (isLocked) { setShowUpgrade(true); return; }
                     setSelectedSound(sound.id);
@@ -455,9 +469,59 @@ export default function App() {
                   {!isLocked && (
                     <TouchableOpacity
                       style={styles.soundPlayButton}
-                      onPress={() => playPreviewSound(sound.id)}
+                      onPress={() => {
+                        triggerHapticFeedback();
+                        playPreviewSound(sound.id);
+                      }}
                     >
                       <Feather name="play" size={14} color={isActive ? '#00f2fe' : '#64748b'} />
+                    </TouchableOpacity>
+                  )}
+                  {isActive && !isLocked && (
+                    <Feather name="check-circle" size={16} color="#10b981" style={{ marginLeft: 8 }} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Padrão de Vibração */}
+          <Text style={styles.sectionSubtitle}>PADRÃO DE VIBRAÇÃO</Text>
+          <View style={styles.vibrationList}>
+            {VIBRATION_PATTERNS.map((pattern) => {
+              const isActive = selectedVibration === pattern.id;
+              const isLocked = pattern.isPremium && !isPremium;
+              return (
+                <TouchableOpacity
+                  key={pattern.id}
+                  style={[styles.vibrationRow, isActive && styles.vibrationRowActive]}
+                  onPress={() => {
+                    triggerHapticFeedback();
+                    if (isEnabled) return;
+                    if (isLocked) { setShowUpgrade(true); return; }
+                    setSelectedVibration(pattern.id);
+                  }}
+                  activeOpacity={isEnabled ? 1 : 0.7}
+                >
+                  <Text style={styles.vibrationIcon}>{pattern.icon}</Text>
+                  <Text style={[styles.vibrationName, isActive && styles.vibrationNameActive]}>
+                    {pattern.name}
+                  </Text>
+                  {isLocked && (
+                    <View style={styles.soundLockBadge}>
+                      <Feather name="lock" size={10} color="#fbbf24" />
+                      <Text style={styles.soundLockText}>PRO</Text>
+                    </View>
+                  )}
+                  {pattern.id !== 'off' && !isLocked && (
+                    <TouchableOpacity
+                      style={styles.soundPlayButton}
+                      onPress={() => {
+                        triggerHapticFeedback();
+                        playVibrationPreview(pattern.id);
+                      }}
+                    >
+                      <Feather name="activity" size={14} color={isActive ? '#00f2fe' : '#64748b'} />
                     </TouchableOpacity>
                   )}
                   {isActive && !isLocked && (
@@ -484,6 +548,7 @@ export default function App() {
               thumbColor={useAtomicSync ? '#ffffff' : '#94a3b8'}
               ios_backgroundColor="#243256"
               onValueChange={(value) => {
+                triggerHapticFeedback();
                 if (!isEnabled) {
                   setUseAtomicSync(value);
                   if (value && !lastSyncTime) syncTime(true);
@@ -509,6 +574,7 @@ export default function App() {
                 thumbColor={quietHoursEnabled ? '#ffffff' : '#94a3b8'}
                 ios_backgroundColor="#243256"
                 onValueChange={(value) => {
+                  triggerHapticFeedback();
                   if (!isEnabled && isPremium) setQuietHoursEnabled(value);
                 }}
                 value={quietHoursEnabled}
@@ -522,14 +588,20 @@ export default function App() {
                   <View style={styles.hourPicker}>
                     <TouchableOpacity
                       style={styles.hourButton}
-                      onPress={() => !isEnabled && setQuietHoursStart(prev => (prev - 1 + 24) % 24)}
+                      onPress={() => {
+                        triggerHapticFeedback();
+                        if (!isEnabled) setQuietHoursStart(prev => (prev - 1 + 24) % 24);
+                      }}
                     >
                       <Feather name="minus" size={14} color="#94a3b8" />
                     </TouchableOpacity>
                     <Text style={styles.hourValue}>{quietHoursStart.toString().padStart(2, '0')}:00</Text>
                     <TouchableOpacity
                       style={styles.hourButton}
-                      onPress={() => !isEnabled && setQuietHoursStart(prev => (prev + 1) % 24)}
+                      onPress={() => {
+                        triggerHapticFeedback();
+                        if (!isEnabled) setQuietHoursStart(prev => (prev + 1) % 24);
+                      }}
                     >
                       <Feather name="plus" size={14} color="#94a3b8" />
                     </TouchableOpacity>
@@ -540,14 +612,20 @@ export default function App() {
                   <View style={styles.hourPicker}>
                     <TouchableOpacity
                       style={styles.hourButton}
-                      onPress={() => !isEnabled && setQuietHoursEnd(prev => (prev - 1 + 24) % 24)}
+                      onPress={() => {
+                        triggerHapticFeedback();
+                        if (!isEnabled) setQuietHoursEnd(prev => (prev - 1 + 24) % 24);
+                      }}
                     >
                       <Feather name="minus" size={14} color="#94a3b8" />
                     </TouchableOpacity>
                     <Text style={styles.hourValue}>{quietHoursEnd.toString().padStart(2, '0')}:00</Text>
                     <TouchableOpacity
                       style={styles.hourButton}
-                      onPress={() => !isEnabled && setQuietHoursEnd(prev => (prev + 1) % 24)}
+                      onPress={() => {
+                        triggerHapticFeedback();
+                        if (!isEnabled) setQuietHoursEnd(prev => (prev + 1) % 24);
+                      }}
                     >
                       <Feather name="plus" size={14} color="#94a3b8" />
                     </TouchableOpacity>
@@ -589,28 +667,107 @@ export default function App() {
             </View>
           </View>
 
-          {isEnabled ? (
-            <View style={styles.countdownContainer}>
-              <Text style={styles.countdownLabel}>PRÓXIMO BIP EM</Text>
-              <Text style={styles.countdownValue}>
-                {getCountdownText(currentTime, effectiveOffset, intervalTime)}
-              </Text>
-              <View style={styles.badgeContainer}>
-                <View style={[styles.badge, styles.badgeActive]}>
-                  <View style={[styles.miniDot, styles.bgSync]} />
-                  <Text style={styles.badgeText}>
-                    {getSyncModeText()} ({Platform.OS === 'ios' ? 'iOS' : 'Android'})
-                  </Text>
+          {isEnabled ? (() => {
+            const intervalMs = intervalTime * 1000;
+            const adjustedNow = currentTime.getTime() + effectiveOffset;
+            const adjustedDate = new Date(adjustedNow);
+            const msSinceMidnight =
+              adjustedDate.getHours() * 3600000 +
+              adjustedDate.getMinutes() * 60000 +
+              adjustedDate.getSeconds() * 1000 +
+              adjustedDate.getMilliseconds();
+            const msIntoInterval = msSinceMidnight % intervalMs;
+            const msLeft = intervalMs - msIntoInterval;
+            const progressRatio = msLeft / intervalMs;
+            const secondsLeft = Math.floor(msLeft / 1000);
+
+            // Configurações do SVG
+            const size = 180;
+            const strokeWidth = 8;
+            const radius = (size - strokeWidth) / 2;
+            const circumference = 2 * Math.PI * radius;
+            const strokeDashoffset = circumference * (1 - progressRatio);
+
+            // Pulsação luminosa (glow) nos últimos 10 segundos
+            const pulse = 0.5 + 0.5 * Math.sin((currentTime.getMilliseconds() / 1000) * Math.PI * 2);
+            const glowWidth = strokeWidth + 6 * pulse;
+            const opacityGlow = 0.1 + 0.25 * pulse;
+
+            return (
+              <View style={styles.countdownContainer}>
+                <View style={styles.circularProgressContainer}>
+                  <Svg width={size} height={size}>
+                    {/* Círculo de fundo */}
+                    <Circle
+                      cx={size / 2}
+                      cy={size / 2}
+                      r={radius}
+                      stroke="#243256"
+                      strokeWidth={strokeWidth}
+                      fill="transparent"
+                      opacity={0.3}
+                    />
+                    {/* Círculo de brilho pulsante (glow) quando segundos < 10 */}
+                    {secondsLeft < 10 && (
+                      <Circle
+                        cx={size / 2}
+                        cy={size / 2}
+                        r={radius}
+                        stroke="#ef4444"
+                        strokeWidth={glowWidth}
+                        fill="transparent"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={strokeDashoffset}
+                        strokeLinecap="round"
+                        rotation="-90"
+                        origin={`${size / 2}, ${size / 2}`}
+                        opacity={opacityGlow}
+                      />
+                    )}
+                    {/* Círculo principal de progresso */}
+                    <Circle
+                      cx={size / 2}
+                      cy={size / 2}
+                      r={radius}
+                      stroke={secondsLeft < 10 ? '#ef4444' : '#10b981'}
+                      strokeWidth={strokeWidth}
+                      fill="transparent"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={strokeDashoffset}
+                      strokeLinecap="round"
+                      rotation="-90"
+                      origin={`${size / 2}, ${size / 2}`}
+                    />
+                  </Svg>
+
+                  <View style={styles.circularProgressTextContainer}>
+                    <Text style={styles.countdownLabel}>PRÓXIMO BIP EM</Text>
+                    <Text style={[
+                      styles.countdownValue,
+                      secondsLeft < 10 && styles.countdownValueAlert
+                    ]}>
+                      {getCountdownText(currentTime, effectiveOffset, intervalTime)}
+                    </Text>
+                  </View>
                 </View>
+
+                <View style={styles.badgeContainer}>
+                  <View style={[styles.badge, styles.badgeActive]}>
+                    <View style={[styles.miniDot, styles.bgSync]} />
+                    <Text style={styles.badgeText}>
+                      {getSyncModeText()} ({Platform.OS === 'ios' ? 'iOS' : 'Android'})
+                    </Text>
+                  </View>
+                </View>
+                {quietHoursEnabled && isPremium && (
+                  <View style={[styles.badge, styles.badgeQuiet, { marginTop: 8 }]}>
+                    <Feather name="moon" size={10} color="#8b5cf6" />
+                    <Text style={styles.badgeQuietText}>Silêncio {getQuietHoursText()}</Text>
+                  </View>
+                )}
               </View>
-              {quietHoursEnabled && isPremium && (
-                <View style={[styles.badge, styles.badgeQuiet, { marginTop: 8 }]}>
-                  <Feather name="moon" size={10} color="#8b5cf6" />
-                  <Text style={styles.badgeQuietText}>Silêncio {getQuietHoursText()}</Text>
-                </View>
-              )}
-            </View>
-          ) : (
+            );
+          })() : (
             <View style={styles.inactiveContainer}>
               <Feather name="alert-circle" size={32} color="#94a3b8" />
               <Text style={styles.inactiveText}>
@@ -1002,6 +1159,50 @@ const styles = StyleSheet.create({
   soundPlayButton: {
     padding: 6,
   },
+  vibrationList: {
+    gap: 6,
+    marginBottom: 20,
+  },
+  vibrationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  vibrationRowActive: {
+    borderColor: 'rgba(0, 242, 254, 0.3)',
+    backgroundColor: 'rgba(0, 242, 254, 0.04)',
+  },
+  vibrationIcon: {
+    fontSize: 18,
+    marginRight: 12,
+  },
+  vibrationName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+  vibrationNameActive: {
+    color: '#f8fafc',
+  },
+  circularProgressContainer: {
+    position: 'relative',
+    width: 200,
+    height: 200,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  circularProgressTextContainer: {
+    position: 'absolute',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
   // Pro badge
   proBadge: {
@@ -1108,14 +1309,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   countdownValue: {
-    fontSize: 36,
+    fontSize: 28,
     fontWeight: '800',
     color: '#10b981',
     fontFamily: Platform.OS === 'ios' ? 'Courier-Bold' : 'monospace',
     textShadowColor: 'rgba(16, 185, 129, 0.25)',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 10,
-    marginBottom: 12,
+  },
+  countdownValueAlert: {
+    color: '#ef4444',
+    textShadowColor: 'rgba(239, 68, 68, 0.4)',
   },
   badgeContainer: {
     flexDirection: 'row',
