@@ -10,7 +10,7 @@ export const SOUNDS = [
   {
     id: 'beep',
     name: 'Beep Clássico',
-    icon: '🔔',
+    icon: 'bell',
     isPremium: false,
     file: require('../assets/beep.mp3'),
     notifSound: 'beep.mp3',
@@ -18,7 +18,7 @@ export const SOUNDS = [
   {
     id: 'sino',
     name: 'Sino',
-    icon: '🛎️',
+    icon: 'volume-2',
     isPremium: true,
     file: require('../assets/sounds/sino.wav'),
     notifSound: 'sino.wav',
@@ -26,7 +26,7 @@ export const SOUNDS = [
   {
     id: 'gongo',
     name: 'Gongo',
-    icon: '🎵',
+    icon: 'disc',
     isPremium: true,
     file: require('../assets/sounds/gongo.wav'),
     notifSound: 'gongo.wav',
@@ -34,7 +34,7 @@ export const SOUNDS = [
   {
     id: 'digital',
     name: 'Digital',
-    icon: '💻',
+    icon: 'cpu',
     isPremium: true,
     file: require('../assets/sounds/digital.wav'),
     notifSound: 'digital.wav',
@@ -42,7 +42,7 @@ export const SOUNDS = [
   {
     id: 'suave',
     name: 'Suave',
-    icon: '🌙',
+    icon: 'feather',
     isPremium: true,
     file: require('../assets/sounds/suave.wav'),
     notifSound: 'suave.wav',

@@ -485,7 +485,7 @@ export default function App() {
                       style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
                     />
                   )}
-                  <Text style={styles.soundIcon}>{sound.icon}</Text>
+                  <Feather name={sound.icon} size={18} color={isActive ? '#00f2fe' : '#64748b'} style={styles.soundIcon} />
                   <Text style={[styles.soundName, isActive && styles.soundNameActive]}>
                     {sound.name}
                   </Text>
@@ -540,7 +540,7 @@ export default function App() {
                       style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
                     />
                   )}
-                  <Text style={styles.vibrationIcon}>{pattern.icon}</Text>
+                  <Feather name={pattern.icon} size={18} color={isActive ? '#00f2fe' : '#64748b'} style={styles.vibrationIcon} />
                   <Text style={[styles.vibrationName, isActive && styles.vibrationNameActive]}>
                     {pattern.name}
                   </Text>
@@ -1182,7 +1182,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   soundIcon: {
-    fontSize: 18,
     marginRight: 12,
   },
   soundName: {
@@ -1232,7 +1231,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   vibrationIcon: {
-    fontSize: 18,
     marginRight: 12,
   },
   vibrationName: {
