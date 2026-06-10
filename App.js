@@ -18,6 +18,7 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 // Services
 import { performTimeSync } from './services/timeSync';
 import * as BackgroundFetch from 'expo-background-fetch';
+import * as TaskManager from 'expo-task-manager';
 import {
   INTERVALS,
   setupNotificationChannel,
@@ -174,7 +175,7 @@ export default function App() {
   useEffect(() => {
     const registerBackgroundFetch = async () => {
       try {
-        const isRegistered = await BackgroundFetch.isTaskRegisteredAsync(BACKGROUND_BIP_HEAL_TASK);
+        const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_BIP_HEAL_TASK);
         if (!isRegistered) {
           await BackgroundFetch.registerTaskAsync(BACKGROUND_BIP_HEAL_TASK, {
             minimumInterval: 15 * 60, // 15 minutos (mínimo permitido por iOS/Android)
