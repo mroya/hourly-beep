@@ -15,6 +15,7 @@ import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
+import { LinearGradient } from 'expo-linear-gradient';
 
 // Services
 import { performTimeSync } from './services/timeSync';
@@ -285,6 +286,10 @@ export default function App() {
   // ─── UI ───────────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
+      <LinearGradient
+        colors={['#060913', '#0e172a']}
+        style={StyleSheet.absoluteFillObject}
+      />
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
 
@@ -353,6 +358,14 @@ export default function App() {
               }}
               disabled={isSyncing}
             >
+              {!isSyncing && (
+                <LinearGradient
+                  colors={['#00f2fe', '#3b82f6']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={[StyleSheet.absoluteFillObject, { borderRadius: 14 }]}
+                />
+              )}
               {isSyncing ? (
                 <ActivityIndicator size="small" color="#ffffff" />
               ) : (
@@ -425,6 +438,14 @@ export default function App() {
                   }}
                   activeOpacity={isEnabled ? 1 : 0.7}
                 >
+                  {isActive && (
+                    <LinearGradient
+                      colors={['#00f2fe', '#4facfe']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={[StyleSheet.absoluteFillObject, { borderRadius: 11 }]}
+                    />
+                  )}
                   <Text style={[
                     styles.intervalText,
                     isActive && styles.intervalTextActive,
@@ -456,6 +477,14 @@ export default function App() {
                   }}
                   activeOpacity={isEnabled ? 1 : 0.7}
                 >
+                  {isActive && (
+                    <LinearGradient
+                      colors={['rgba(0, 242, 254, 0.12)', 'rgba(79, 172, 254, 0.02)']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
+                    />
+                  )}
                   <Text style={styles.soundIcon}>{sound.icon}</Text>
                   <Text style={[styles.soundName, isActive && styles.soundNameActive]}>
                     {sound.name}
@@ -503,6 +532,14 @@ export default function App() {
                   }}
                   activeOpacity={isEnabled ? 1 : 0.7}
                 >
+                  {isActive && (
+                    <LinearGradient
+                      colors={['rgba(0, 242, 254, 0.12)', 'rgba(79, 172, 254, 0.02)']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={[StyleSheet.absoluteFillObject, { borderRadius: 12 }]}
+                    />
+                  )}
                   <Text style={styles.vibrationIcon}>{pattern.icon}</Text>
                   <Text style={[styles.vibrationName, isActive && styles.vibrationNameActive]}>
                     {pattern.name}
@@ -779,14 +816,26 @@ export default function App() {
 
         {/* ─── Banner Premium (para free) ──────────────────────────────── */}
         {!isPremium && (
-          <TouchableOpacity style={styles.upgradeBanner} onPress={() => setShowUpgrade(true)}>
+          <TouchableOpacity style={styles.upgradeBanner} onPress={() => { triggerHapticFeedback(); setShowUpgrade(true); }}>
+            <LinearGradient
+              colors={['#fbbf24', '#f59e0b', '#d97706']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[StyleSheet.absoluteFillObject, { borderRadius: 18 }]}
+            />
+            <LinearGradient
+              colors={['rgba(255, 255, 255, 0.15)', 'rgba(255, 255, 255, 0)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={[StyleSheet.absoluteFillObject, { borderRadius: 18 }]}
+            />
             <View style={styles.upgradeBannerContent}>
-              <Ionicons name="star" size={20} color="#fbbf24" />
+              <Ionicons name="star" size={20} color="#ffffff" />
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={styles.upgradeBannerTitle}>Upgrade para Premium</Text>
                 <Text style={styles.upgradeBannerDesc}>Sons exclusivos, intervalos custom e mais</Text>
               </View>
-              <Feather name="chevron-right" size={20} color="#fbbf24" />
+              <Feather name="chevron-right" size={20} color="#ffffff" />
             </View>
           </TouchableOpacity>
         )}
@@ -813,7 +862,7 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#090d16',
+    backgroundColor: '#060913',
   },
   scrollContainer: {
     padding: 20,
@@ -869,17 +918,17 @@ const styles = StyleSheet.create({
 
   // Cards
   card: {
-    backgroundColor: '#131c31',
+    backgroundColor: 'rgba(19, 28, 49, 0.55)',
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#243256',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     padding: 20,
     width: '100%',
     marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.25,
-    shadowRadius: 15,
+    shadowColor: '#00f2fe',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
     elevation: 8,
   },
   cardHeader: {
@@ -1030,7 +1079,7 @@ const styles = StyleSheet.create({
 
   // Sync button
   syncButton: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: 'transparent',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1042,6 +1091,8 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 4,
+    position: 'relative',
+    overflow: 'hidden',
   },
   syncButtonDisabled: {
     backgroundColor: '#1d4ed8',
@@ -1083,12 +1134,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   intervalActive: {
-    backgroundColor: '#3b82f6',
-    borderColor: '#3b82f6',
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
+    backgroundColor: 'transparent',
+    borderColor: 'rgba(0, 242, 254, 0.4)',
+    shadowColor: '#00f2fe',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    overflow: 'hidden',
   },
   intervalLocked: {
     borderColor: '#1e293b',
@@ -1125,8 +1177,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   soundRowActive: {
-    borderColor: 'rgba(0, 242, 254, 0.3)',
-    backgroundColor: 'rgba(0, 242, 254, 0.04)',
+    borderColor: 'rgba(0, 242, 254, 0.4)',
+    backgroundColor: 'transparent',
+    overflow: 'hidden',
   },
   soundIcon: {
     fontSize: 18,
@@ -1174,8 +1227,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   vibrationRowActive: {
-    borderColor: 'rgba(0, 242, 254, 0.3)',
-    backgroundColor: 'rgba(0, 242, 254, 0.04)',
+    borderColor: 'rgba(0, 242, 254, 0.4)',
+    backgroundColor: 'transparent',
+    overflow: 'hidden',
   },
   vibrationIcon: {
     fontSize: 18,
@@ -1371,11 +1425,16 @@ const styles = StyleSheet.create({
   // Upgrade banner
   upgradeBanner: {
     width: '100%',
-    backgroundColor: 'rgba(251, 191, 36, 0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.15)',
+    backgroundColor: 'transparent',
     borderRadius: 18,
     marginBottom: 20,
+    position: 'relative',
+    overflow: 'hidden',
+    shadowColor: '#fbbf24',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 6,
   },
   upgradeBannerContent: {
     flexDirection: 'row',
@@ -1383,14 +1442,15 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   upgradeBannerTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fbbf24',
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#ffffff',
   },
   upgradeBannerDesc: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: 'rgba(255, 255, 255, 0.85)',
     marginTop: 2,
+    fontWeight: '600',
   },
 
   // Footer
