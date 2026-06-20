@@ -25,14 +25,18 @@ export const INTERVALS = [
 export async function setupNotificationChannel(soundFile = 'beep.mp3', vibrationPattern = null) {
   if (Platform.OS === 'android') {
     const hasVibration = vibrationPattern && vibrationPattern.length > 0;
-    await Notifications.setNotificationChannelAsync('hourly-beep', {
+    const soundName = soundFile.includes('.') ? soundFile.split('.')[0] : soundFile;
+    const channelId = `hourly-beep-${soundName}`;
+    await Notifications.setNotificationChannelAsync(channelId, {
       name: 'Hourly Beep',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: soundFile,
+      sound: soundName,
       enableVibrate: !!hasVibration,
       vibrationPattern: hasVibration ? vibrationPattern : undefined,
     });
+    return channelId;
   }
+  return null;
 }
 
 /**
@@ -79,7 +83,7 @@ export async function scheduleNotifications({
   const adjustedNow = now + offset;
 
   // Garante que o canal está configurado com o som e vibração corretos no Android
-  await setupNotificationChannel(soundFile, vibrationPattern);
+  const channelId = await setupNotificationChannel(soundFile, vibrationPattern);
 
   // iOS pode usar calendar trigger para intervalos padrão (sem quiet hours)
   const canUseCalendarTrigger =
@@ -142,7 +146,7 @@ export async function scheduleNotifications({
         trigger: {
           type: 'date',
           date: scheduledTime,
-          ...(Platform.OS === 'android' ? { channelId: 'hourly-beep' } : {}),
+          ...(Platform.OS === 'android' ? { channelId } : {}),
         },
       })
     );

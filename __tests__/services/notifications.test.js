@@ -70,11 +70,11 @@ describe('setupNotificationChannel', () => {
     await setupNotificationChannel('beep.mp3', [0, 100]);
 
     expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith(
-      'hourly-beep',
+      'hourly-beep-beep',
       expect.objectContaining({
         name: 'Hourly Beep',
         importance: Notifications.AndroidImportance.HIGH,
-        sound: 'beep.mp3',
+        sound: 'beep',
         enableVibrate: true,
         vibrationPattern: [0, 100],
       })
@@ -85,7 +85,7 @@ describe('setupNotificationChannel', () => {
     await setupNotificationChannel('beep.mp3', null);
 
     expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith(
-      'hourly-beep',
+      'hourly-beep-beep',
       expect.objectContaining({
         enableVibrate: false,
       })
