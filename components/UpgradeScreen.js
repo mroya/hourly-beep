@@ -9,6 +9,8 @@ import {
   Alert,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { COLORS, SPACING, RADIUS, SHADOWS, GRADIENTS, TYPOGRAPHY } from '../styles/theme';
 
 const FEATURES = [
   { icon: 'volume-x', label: 'Remover anúncios', desc: 'Experiência limpa e sem interrupções' },
@@ -54,15 +56,19 @@ export default function UpgradeScreen({ visible, onClose, onPurchase, onRestore 
     <Modal visible={visible} animationType="slide" transparent statusBarTranslucent>
       <View style={styles.overlay}>
         <View style={styles.container}>
+          <LinearGradient
+            colors={GRADIENTS.background}
+            style={[StyleSheet.absoluteFillObject, { borderTopLeftRadius: 28, borderTopRightRadius: 28 }]}
+          />
           {/* Botão fechar */}
           <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-            <Feather name="x" size={24} color="#94a3b8" />
+            <Feather name="x" size={20} color={COLORS.textTertiary} />
           </TouchableOpacity>
 
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.starContainer}>
-              <Ionicons name="star" size={40} color="#fbbf24" />
+              <Ionicons name="star" size={40} color={COLORS.gold} />
             </View>
             <Text style={styles.title}>Bip Horário</Text>
             <Text style={styles.titleAccent}>Premium</Text>
@@ -74,19 +80,31 @@ export default function UpgradeScreen({ visible, onClose, onPurchase, onRestore 
             {FEATURES.map((feature, index) => (
               <View key={index} style={styles.featureRow}>
                 <View style={styles.featureIconContainer}>
-                  <Feather name={feature.icon} size={18} color="#fbbf24" />
+                  <Feather name={feature.icon} size={18} color={COLORS.gold} />
                 </View>
                 <View style={styles.featureText}>
                   <Text style={styles.featureLabel}>{feature.label}</Text>
                   <Text style={styles.featureDesc}>{feature.desc}</Text>
                 </View>
-                <Feather name="check" size={18} color="#10b981" />
+                <Feather name="check" size={18} color={COLORS.success} />
               </View>
             ))}
           </View>
 
           {/* Botão de compra */}
           <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
+            <LinearGradient
+              colors={GRADIENTS.premium}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[StyleSheet.absoluteFillObject, { borderRadius: 16 }]}
+            />
+            <LinearGradient
+              colors={GRADIENTS.premiumShine}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={[StyleSheet.absoluteFillObject, { borderRadius: 16 }]}
+            />
             <Text style={styles.purchaseButtonText}>Desbloquear Premium</Text>
             <Text style={styles.priceText}>R$ 9,90 · Compra única</Text>
           </TouchableOpacity>
@@ -104,60 +122,70 @@ export default function UpgradeScreen({ visible, onClose, onPurchase, onRestore 
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     justifyContent: 'flex-end',
   },
   container: {
-    backgroundColor: '#0f172a',
+    backgroundColor: COLORS.backgroundAlt,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingHorizontal: 24,
     paddingTop: 20,
     paddingBottom: Platform.OS === 'ios' ? 40 : 28,
     borderTopWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: COLORS.borderSubtle,
+    overflow: 'hidden',
+    position: 'relative',
   },
   closeButton: {
     alignSelf: 'flex-end',
-    padding: 4,
+    padding: 6,
+    backgroundColor: COLORS.surfaceSolid,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   header: {
     alignItems: 'center',
     marginBottom: 24,
   },
   starContainer: {
-    backgroundColor: 'rgba(251, 191, 36, 0.12)',
-    borderRadius: 50,
+    backgroundColor: COLORS.goldDimAlt,
+    borderRadius: RADIUS.circle,
     padding: 14,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.2)',
+    borderColor: COLORS.goldBorder,
+    shadowColor: COLORS.gold,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
   },
   title: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: COLORS.textPrimary,
   },
   titleAccent: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#fbbf24',
+    color: COLORS.gold,
     marginTop: -4,
   },
   subtitle: {
     fontSize: 14,
-    color: '#94a3b8',
+    color: COLORS.textTertiary,
     marginTop: 6,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   featuresContainer: {
-    backgroundColor: '#131c31',
-    borderRadius: 18,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.card,
     padding: 16,
     gap: 14,
     marginBottom: 24,
     borderWidth: 1,
-    borderColor: '#243256',
+    borderColor: COLORS.borderMedium,
   },
   featureRow: {
     flexDirection: 'row',
@@ -165,8 +193,8 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   featureIconContainer: {
-    backgroundColor: 'rgba(251, 191, 36, 0.1)',
-    borderRadius: 10,
+    backgroundColor: COLORS.goldDim,
+    borderRadius: RADIUS.md,
     padding: 8,
   },
   featureText: {
@@ -175,33 +203,35 @@ const styles = StyleSheet.create({
   featureLabel: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: COLORS.textSecondary,
   },
   featureDesc: {
     fontSize: 11,
-    color: '#64748b',
+    color: COLORS.textMuted,
     marginTop: 1,
   },
   purchaseButton: {
-    backgroundColor: '#fbbf24',
+    backgroundColor: COLORS.transparent,
     borderRadius: 16,
     paddingVertical: 16,
     alignItems: 'center',
-    shadowColor: '#fbbf24',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowColor: COLORS.gold,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
     elevation: 6,
+    position: 'relative',
+    overflow: 'hidden',
   },
   purchaseButtonText: {
     fontSize: 17,
     fontWeight: '800',
-    color: '#0f172a',
+    color: COLORS.textOnDark,
   },
   priceText: {
     fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(15, 23, 42, 0.7)',
+    fontWeight: '700',
+    color: 'rgba(15, 23, 42, 0.75)',
     marginTop: 2,
   },
   restoreButton: {
@@ -210,7 +240,7 @@ const styles = StyleSheet.create({
   },
   restoreText: {
     fontSize: 13,
-    color: '#64748b',
-    fontWeight: '500',
+    color: COLORS.textMuted,
+    fontWeight: '600',
   },
 });
